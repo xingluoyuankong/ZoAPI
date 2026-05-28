@@ -349,39 +349,132 @@ def _convo_key(account_label: str, system: str | None, first_user_msg: str) -> s
     return f"{account_label}::{h.hexdigest()[:16]}"
 
 
+# ---------------------------------------------------------------------------
+# Динамический список моделей Zo (для fallback на ближайшую доступную)
+# ---------------------------------------------------------------------------
+
+_AVAILABLE_IDS: set[str] = set()
+_AVAILABLE_REFRESH_TS: float = 0.0
+_AVAILABLE_TTL: float = 300.0
+_AVAILABLE_LOCK = asyncio.Lock()
+
+
+async def _refresh_available_models(force: bool = False) -> set[str]:
+    """Тянем /models/available у Zo, кэшируем _AVAILABLE_TTL секунд.
+
+    Если нет аккаунтов или сеть упала — оставляем прежний снимок (или пустой
+    set, тогда fallback просто отключается)."""
+    global _AVAILABLE_REFRESH_TS
+    now = time.monotonic()
+    if not force and _AVAILABLE_IDS and (now - _AVAILABLE_REFRESH_TS) < _AVAILABLE_TTL:
+        return _AVAILABLE_IDS
+    async with _AVAILABLE_LOCK:
+        if not force and _AVAILABLE_IDS and (now - _AVAILABLE_REFRESH_TS) < _AVAILABLE_TTL:
+            return _AVAILABLE_IDS
+        a = _pick_account()
+        if not a:
+            return _AVAILABLE_IDS
+        try:
+            models = await ZO.list_models(a)
+        except Exception as e:  # noqa: BLE001
+            log.warning("refresh_available_models failed: %s", e)
+            return _AVAILABLE_IDS
+        ids = {m.get("model_name") for m in models if isinstance(m, dict) and m.get("model_name")}
+        if ids:
+            _AVAILABLE_IDS.clear()
+            _AVAILABLE_IDS.update(ids)
+            _AVAILABLE_REFRESH_TS = now
+            log.info("refreshed Zo model list: %d models", len(_AVAILABLE_IDS))
+    return _AVAILABLE_IDS
+
+
+_FAMILY_RE = re.compile(r"^(?P<vendor>zo:[^/]+/)(?P<family>[a-z]+(?:-[a-z]+)*)(?P<rest>(?:-\d+)*.*)?$")
+
+
+def _model_family(zo_id: str) -> str:
+    """zo:anthropic/claude-opus-4-8           -> zo:anthropic/claude-opus
+    zo:openai/gpt-5.5                      -> zo:openai/gpt
+    zo:anthropic/claude-sonnet-4-6-thinking -> zo:anthropic/claude-sonnet
+    Берёт word-сегменты с начала до первой цифры."""
+    if "/" not in zo_id:
+        return zo_id
+    vendor, name = zo_id.split("/", 1)
+    parts = name.split("-")
+    fam_parts = []
+    for p in parts:
+        # пока встречаем не-цифровой и не "version" сегмент — добавляем
+        if any(ch.isdigit() for ch in p):
+            break
+        fam_parts.append(p)
+    if not fam_parts:
+        fam_parts = [parts[0]]
+    return f"{vendor}/{'-'.join(fam_parts)}"
+
+
+def _version_key(zo_id: str) -> tuple:
+    """Ключ сортировки: набор всех чисел в id, по убыванию идёт «новее»."""
+    nums = re.findall(r"\d+", zo_id)
+    return tuple(int(n) for n in nums)
+
+
+def _fallback_in_family(upstream: str) -> str:
+    """Если upstream есть у Zo — возвращаем как есть.  Иначе ищем
+    ближайшую модель той же семьи (например opus 4-8 -> opus 4-7),
+    либо хоть что-то от того же vendor.  Если и этого нет —
+    отдаём upstream как есть, пусть Zo сам бросит 4xx."""
+    if not _AVAILABLE_IDS or upstream in _AVAILABLE_IDS:
+        return upstream
+    family = _model_family(upstream)
+    same_family = [m for m in _AVAILABLE_IDS if _model_family(m) == family]
+    if same_family:
+        same_family.sort(key=_version_key, reverse=True)
+        return same_family[0]
+    if "/" in upstream:
+        vendor_prefix = upstream.split("/", 1)[0] + "/"
+        same_vendor = [m for m in _AVAILABLE_IDS if m.startswith(vendor_prefix)]
+        if same_vendor:
+            same_vendor.sort(key=_version_key, reverse=True)
+            return same_vendor[0]
+    return upstream
+
+
 def _resolve_model(requested: str | None) -> str:
     forced = runtime.get_force_model().strip() if hasattr(runtime, "get_force_model") else ""
     name = (forced or (requested or "")).strip()
     if not name:
         return ZO_DEFAULT_MODEL
     if name.startswith("zo:"):
-        return name
+        return _fallback_in_family(name)
 
     # 1) Точные алиасы (короткие имена) — case-insensitive.
     low = name.lower()
     for needle, target in MODEL_MAP.items():
         if needle.lower() == low:
-            return target
+            return _fallback_in_family(target)
 
     # 2) Умная маршрутизация по префиксу.
     if name.startswith("claude"):
-        return f"zo:anthropic/{name}"
+        return _fallback_in_family(f"zo:anthropic/{name}")
     if name.startswith("gpt-") or name.startswith("o1") or name.startswith("o3") or name.startswith("o4") or name.startswith("codex"):
-        return f"zo:openai/{name}"
+        return _fallback_in_family(f"zo:openai/{name}")
     if name.startswith("gemini"):
-        return f"zo:google/{name}"
+        return _fallback_in_family(f"zo:google/{name}")
     if name.startswith("grok"):
-        return f"zo:xai/{name}"
+        return _fallback_in_family(f"zo:xai/{name}")
     if name.startswith("deepseek"):
-        return f"zo:deepseek/{name}"
+        return _fallback_in_family(f"zo:deepseek/{name}")
     if name.startswith("llama"):
-        return f"zo:meta/{name}"
+        return _fallback_in_family(f"zo:meta/{name}")
     if name.startswith("qwen"):
-        return f"zo:alibaba/{name}"
+        return _fallback_in_family(f"zo:alibaba/{name}")
     if name.startswith("kimi"):
-        return f"zo:moonshot/{name}"
+        return _fallback_in_family(f"zo:moonshot/{name}")
+    if name.startswith("glm"):
+        return _fallback_in_family(f"zo:zai/{name}")
+    if name.startswith("minimax"):
+        return _fallback_in_family(f"zo:minimax/{name}")
 
-    return ZO_DEFAULT_MODEL
+    return _fallback_in_family(ZO_DEFAULT_MODEL)
 
 
 async def _get_models_for(account: Account) -> list[dict[str, Any]]:
@@ -522,13 +615,31 @@ async def admin_set_active(req: Request) -> dict[str, Any]:
     return {"ok": True, "active": label}
 
 
+
+
+@app.on_event("startup")
+async def _startup_warm_models() -> None:
+    try:
+        await _refresh_available_models(force=True)
+    except Exception as e:  # noqa: BLE001
+        log.warning("startup model refresh failed: %s", e)
+
+    async def _periodic() -> None:
+        while True:
+            await asyncio.sleep(_AVAILABLE_TTL)
+            try:
+                await _refresh_available_models(force=True)
+            except Exception:
+                pass
+
+    asyncio.create_task(_periodic())
+
 # ------------------------- models -------------------------
 
 
 ANTHROPIC_CATALOG: list[dict[str, Any]] = [
     {"id": "claude-opus-4-7", "display_name": "Claude Opus 4.7", "summary": "Most capable for complex work"},
     {"id": "claude-sonnet-4-6", "display_name": "Claude Sonnet 4.6", "summary": "Best for everyday tasks"},
-    {"id": "claude-haiku-4-6", "display_name": "Claude Haiku 4.6", "summary": "Fastest for quick answers"},
 ]
 
 

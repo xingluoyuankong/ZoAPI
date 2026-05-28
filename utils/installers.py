@@ -423,13 +423,23 @@ OPENCODE_PROVIDER = {
         "apiKey": DUMMY_KEY,
     },
     "models": {
-        # Список = то, что Zo реально хостит сейчас (curl
-        # https://api.zo.computer/models/available).  Когда у Zo появятся
-        # новые модели — добавь строку, рестартни прокси, OpenCode
-        # подхватит из opencode.json после `opencode auth refresh`.
+        # Anthropic
         "claude-opus-4-7": {"name": "Claude Opus 4.7"},
         "claude-sonnet-4-6": {"name": "Claude Sonnet 4.6"},
+        # OpenAI / GPT
         "gpt-5.5": {"name": "GPT-5.5"},
+        "gpt-5.4": {"name": "GPT-5.4"},
+        "gpt-5.4-mini": {"name": "GPT-5.4 Mini"},
+        "gpt-5.3-codex": {"name": "GPT-5.3 Codex"},
+        # Google
+        "gemini-3.1-pro-preview": {"name": "Gemini 3.1 Pro (preview)"},
+        # DeepSeek
+        "deepseek-v4-pro": {"name": "DeepSeek V4 Pro"},
+        # Z.AI
+        "glm-5": {"name": "GLM-5"},
+        # MiniMax
+        "minimax-m2.5": {"name": "MiniMax 2.5"},
+        "minimax-m2.7": {"name": "MiniMax 2.7"},
     },
 }
 
