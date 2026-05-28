@@ -1225,22 +1225,10 @@ if __name__ == "__main__":
 
     _print_startup_banner()
     if not STORE.accounts:
-        import sys
-        # подсказка и автозапуск setup.py если запустили вручную
-        try:
-            if sys.stdin.isatty():
-                print("Открыть мастер добавления аккаунта прямо сейчас? [Y/n]: ", end="", flush=True)
-                ans = sys.stdin.readline().strip().lower()
-                if ans in ("", "y", "yes", "д", "да"):
-                    import setup as _setup
-                    _setup.menu(STORE)
-                    if not STORE.accounts:
-                        print("Аккаунтов всё ещё нет — выхожу.")
-                        sys.exit(1)
-        except Exception:
-            pass
-        if not STORE.accounts:
-            sys.exit(1)
+        print(
+            "Нет аккаунтов. Запусти лончер: run.bat (Windows) или ./run.sh (mac/linux)."
+        )
+        sys.exit(1)
 
     uvicorn.run(
         "proxy:app",
