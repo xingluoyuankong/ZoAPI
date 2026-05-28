@@ -380,3 +380,15 @@ def extract_domain_from_access_token(access_token: str) -> str | None:
         return domains[0] if domains else None
     except Exception:
         return None
+
+
+def clean_domain(domain: str | None) -> str:
+    """Нормализуем домен: убираем пробелы, обратные слэши, кавычки, лишние слэши."""
+    if not domain:
+        return ""
+    s = str(domain).strip().strip('"\'')
+    s = s.replace("\\", "").replace("//", "/")
+    if "://" in s:
+        s = s.split("://", 1)[1]
+    s = s.split("/", 1)[0]
+    return s.strip()
