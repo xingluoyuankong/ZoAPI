@@ -3,41 +3,22 @@ set -euo pipefail
 cd "$(dirname "$0")"
 
 echo
-echo "  zo-claude-proxy"
-echo "  ==============="
+echo "                ZoAPI"
+echo "       ====================="
 echo
 
-if command -v python3 >/dev/null 2>&1; then
-  PYTHON_CMD="python3"
-elif command -v python >/dev/null 2>&1; then
-  PYTHON_CMD="python"
-else
-  echo "[!] Python 3.10+ не найден. Установи Python и повтори запуск."
-  exit 1
-fi
-
-if ! "$PYTHON_CMD" - <<'PY' >/dev/null 2>&1
-import sys
-raise SystemExit(0 if sys.version_info >= (3, 10) else 1)
-PY
-then
-  echo "[!] Нужен Python 3.10 или новее. Сейчас: $($PYTHON_CMD --version 2>&1)"
-  exit 1
-fi
-
 if [ ! -x .venv/bin/python ]; then
-  echo "[+] Создаю виртуальное окружение .venv ..."
-  "$PYTHON_CMD" -m venv .venv
+  echo "[!] Окружение не найдено. Сначала запусти setup.sh"
+  exit 1
 fi
 
 VPY="./.venv/bin/python"
-
 if ! "$VPY" - <<'PY' >/dev/null 2>&1
 import fastapi, uvicorn, httpx, pydantic, questionary, rich, playwright
 PY
 then
-  echo "[+] Ставлю/обновляю зависимости проекта ..."
-  "$VPY" -m pip install --quiet -r requirements.txt
+  echo "[!] Похоже, зависимости не поставлены до конца. Запусти setup.sh"
+  exit 1
 fi
 
 exec "$VPY" utils/launcher.py "$@"
