@@ -8,6 +8,7 @@ import shutil
 import socket
 import subprocess
 import sys
+import tempfile
 import time
 import webbrowser
 from pathlib import Path
