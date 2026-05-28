@@ -21,7 +21,7 @@ PROXY_PORT = 17878
 
 # Модель Zo по умолчанию (когда клиент не указал явно).
 # Полный список: GET https://api.zo.computer/models/available
-ZO_DEFAULT_MODEL = "zo:anthropic/claude-opus-4-8"
+ZO_DEFAULT_MODEL = "zo:anthropic/claude-opus-4-7"
 
 # Короткие алиасы. Ключ — ТОЧНОЕ имя (case-insensitive), не подстрока.
 # Полные имена моделей (например claude-opus-4-8-20251210, gpt-5-codex)

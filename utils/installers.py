@@ -423,56 +423,13 @@ OPENCODE_PROVIDER = {
         "apiKey": DUMMY_KEY,
     },
     "models": {
-        # OpenAI
-        "gpt-5": {"name": "GPT-5"},
-        "gpt-5-pro": {"name": "GPT-5 Pro"},
-        "gpt-5-codex": {"name": "GPT-5 Codex"},
-        "gpt-5-mini": {"name": "GPT-5 Mini"},
-        "gpt-5-nano": {"name": "GPT-5 Nano"},
-        "gpt-4o": {"name": "GPT-4o"},
-        "gpt-4o-mini": {"name": "GPT-4o Mini"},
-        "o3": {"name": "o3"},
-        "o3-pro": {"name": "o3 Pro"},
-        "o3-mini": {"name": "o3 Mini"},
-        "o4-mini": {"name": "o4 Mini"},
-        "o1": {"name": "o1"},
-        "o1-preview": {"name": "o1 Preview"},
-        # Anthropic
-        "claude-opus-4-8": {"name": "Claude Opus 4.8"},
-        "claude-opus-4-8-thinking": {"name": "Claude Opus 4.8 (Thinking)"},
+        # Список = то, что Zo реально хостит сейчас (curl
+        # https://api.zo.computer/models/available).  Когда у Zo появятся
+        # новые модели — добавь строку, рестартни прокси, OpenCode
+        # подхватит из opencode.json после `opencode auth refresh`.
         "claude-opus-4-7": {"name": "Claude Opus 4.7"},
-        "claude-opus-4-5": {"name": "Claude Opus 4.5"},
-        "claude-opus-4-1": {"name": "Claude Opus 4.1"},
-        "claude-opus-4": {"name": "Claude Opus 4"},
         "claude-sonnet-4-6": {"name": "Claude Sonnet 4.6"},
-        "claude-sonnet-4-6-thinking": {"name": "Claude Sonnet 4.6 (Thinking)"},
-        "claude-sonnet-4-5": {"name": "Claude Sonnet 4.5"},
-        "claude-sonnet-4-5-extended-thinking": {"name": "Claude Sonnet 4.5 (Extended)"},
-        "claude-sonnet-4": {"name": "Claude Sonnet 4"},
-        "claude-haiku-4-6": {"name": "Claude Haiku 4.6"},
-        "claude-haiku-4-5": {"name": "Claude Haiku 4.5"},
-        "claude-3-7-sonnet": {"name": "Claude 3.7 Sonnet"},
-        "claude-3-5-sonnet": {"name": "Claude 3.5 Sonnet"},
-        "claude-3-5-haiku": {"name": "Claude 3.5 Haiku"},
-        "claude-3-opus": {"name": "Claude 3 Opus"},
-        # Google
-        "gemini-3.0-pro": {"name": "Gemini 3.0 Pro"},
-        "gemini-3.0-flash": {"name": "Gemini 3.0 Flash"},
-        "gemini-3.0-pro-thinking": {"name": "Gemini 3.0 Pro Thinking"},
-        "gemini-2.5-pro": {"name": "Gemini 2.5 Pro"},
-        "gemini-2.5-flash": {"name": "Gemini 2.5 Flash"},
-        "gemini-2.0-pro": {"name": "Gemini 2.0 Pro"},
-        "gemini-2.0-flash": {"name": "Gemini 2.0 Flash"},
-        # xAI
-        "grok-4": {"name": "Grok 4"},
-        "grok-3": {"name": "Grok 3"},
-        "grok-2": {"name": "Grok 2"},
-        # DeepSeek
-        "deepseek-v3": {"name": "DeepSeek V3"},
-        "deepseek-r1": {"name": "DeepSeek R1"},
-        # Meta
-        "llama-4": {"name": "Llama 4"},
-        "llama-3.3-70b": {"name": "Llama 3.3 70B"},
+        "gpt-5.5": {"name": "GPT-5.5"},
     },
 }
 

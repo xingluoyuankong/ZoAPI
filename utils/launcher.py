@@ -1015,28 +1015,15 @@ def proxies_menu(state: dict) -> None:
 
 
 FORCE_PRESETS = [
-    ("opus", "→ Claude Opus 4.8"),
-    ("sonnet", "→ Claude Sonnet 4.6"),
-    ("haiku", "→ Claude Haiku 4.6"),
-    ("codex", "→ GPT-5 Codex"),
-    ("claude-opus-4-8", "Claude Opus 4.8"),
-    ("claude-opus-4-8-thinking", "Claude Opus 4.8 (Thinking)"),
-    ("claude-opus-4-7", "Claude Opus 4.7"),
-    ("claude-sonnet-4-6", "Claude Sonnet 4.6"),
-    ("claude-sonnet-4-6-thinking", "Claude Sonnet 4.6 (Thinking)"),
-    ("claude-haiku-4-6", "Claude Haiku 4.6"),
-    ("gpt-5", "GPT-5"),
-    ("gpt-5-pro", "GPT-5 Pro"),
-    ("gpt-5-codex", "GPT-5 Codex"),
-    ("gpt-5-mini", "GPT-5 Mini"),
-    ("o3", "o3"),
-    ("o3-pro", "o3 Pro"),
-    ("o4-mini", "o4 Mini"),
-    ("gemini-3.0-pro", "Gemini 3.0 Pro"),
-    ("gemini-3.0-flash", "Gemini 3.0 Flash"),
-    ("grok-4", "Grok 4"),
-    ("deepseek-v3", "DeepSeek V3"),
-    ("kimi-k2", "Kimi K2"),
+    # короткие алиасы, которые прокси раскрывает в полные имена
+    ("opus", "→ Claude Opus 4.7 (короткий алиас)"),
+    ("sonnet", "→ Claude Sonnet 4.6 (короткий алиас)"),
+    ("codex", "→ GPT-5.3 Codex (короткий алиас)"),
+    # реально доступные на Zo прямо сейчас (curl
+    # https://api.zo.computer/models/available)
+    ("c", "→ Claude Opus 4.7"),
+    ("s", "→ Claude Sonnet 4.6"),
+    ("c", "→ GPT-5.3 Codex"),
 ]
 
 

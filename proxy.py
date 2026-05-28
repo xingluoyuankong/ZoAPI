@@ -526,28 +526,9 @@ async def admin_set_active(req: Request) -> dict[str, Any]:
 
 
 ANTHROPIC_CATALOG: list[dict[str, Any]] = [
-    # Opus
-    {"id": "claude-opus-4-8", "display_name": "Claude Opus 4.8", "summary": "Most capable for complex work"},
-    {"id": "claude-opus-4-8-thinking", "display_name": "Claude Opus 4.8 (Thinking)", "summary": "Opus 4.8 with extended thinking"},
-    {"id": "claude-opus-4-7", "display_name": "Claude Opus 4.7", "summary": "Previous flagship"},
-    {"id": "claude-opus-4-7-thinking", "display_name": "Claude Opus 4.7 (Thinking)", "summary": "Opus 4.7 with extended thinking"},
-    {"id": "claude-opus-4-6", "display_name": "Claude Opus 4.6", "summary": "Older flagship"},
-    {"id": "claude-opus-4-5", "display_name": "Claude Opus 4.5", "summary": "Older flagship"},
-    {"id": "claude-opus-4-1", "display_name": "Claude Opus 4.1", "summary": "Older flagship"},
-    {"id": "claude-opus-4", "display_name": "Claude Opus 4", "summary": "Older flagship"},
-    {"id": "claude-3-opus-latest", "display_name": "Claude 3 Opus", "summary": "Anthropic 3.x family"},
-    # Sonnet
+    {"id": "claude-opus-4-7", "display_name": "Claude Opus 4.7", "summary": "Most capable for complex work"},
     {"id": "claude-sonnet-4-6", "display_name": "Claude Sonnet 4.6", "summary": "Best for everyday tasks"},
-    {"id": "claude-sonnet-4-6-thinking", "display_name": "Claude Sonnet 4.6 (Thinking)", "summary": "Sonnet 4.6 with extended thinking"},
-    {"id": "claude-sonnet-4-5", "display_name": "Claude Sonnet 4.5", "summary": "Older everyday model"},
-    {"id": "claude-sonnet-4-5-thinking", "display_name": "Claude Sonnet 4.5 (Thinking)", "summary": "Sonnet 4.5 with extended thinking"},
-    {"id": "claude-sonnet-4", "display_name": "Claude Sonnet 4", "summary": "Older everyday model"},
-    {"id": "claude-3-7-sonnet-latest", "display_name": "Claude 3.7 Sonnet", "summary": "Anthropic 3.x family"},
-    {"id": "claude-3-5-sonnet-latest", "display_name": "Claude 3.5 Sonnet", "summary": "Anthropic 3.x family"},
-    # Haiku
     {"id": "claude-haiku-4-6", "display_name": "Claude Haiku 4.6", "summary": "Fastest for quick answers"},
-    {"id": "claude-haiku-4-5", "display_name": "Claude Haiku 4.5", "summary": "Older fast model"},
-    {"id": "claude-3-5-haiku-latest", "display_name": "Claude 3.5 Haiku", "summary": "Anthropic 3.x family"},
 ]
 
 
