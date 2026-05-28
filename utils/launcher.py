@@ -20,7 +20,12 @@ if str(ROOT) not in sys.path:
 import questionary
 from accounts import Account, AccountStore, clean_domain, extract_domain_from_access_token
 from playwright.sync_api import TimeoutError as PlaywrightTimeoutError
-from playwright.sync_api import sync_playwright
+try:
+    from patchright.sync_api import sync_playwright  # type: ignore[no-redef]
+    BROWSER_BACKEND = "patchright"
+except Exception:
+    from playwright.sync_api import sync_playwright
+    BROWSER_BACKEND = "playwright"
 try:
     from playwright_stealth import stealth_sync
 except Exception:

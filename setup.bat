@@ -77,7 +77,7 @@ if errorlevel 1 (
 )
 
 echo [+] Проверяю Python-модули...
-"%VPY%" -c "import fastapi, uvicorn, httpx, pydantic, questionary, rich, playwright, playwright_stealth; print('ok')"
+"%VPY%" -c "import fastapi, uvicorn, httpx, pydantic, questionary, rich, playwright, playwright_stealth, patchright; print('ok')"
 if errorlevel 1 (
   echo [!] Проверка импортов не прошла.
   echo.
@@ -87,6 +87,7 @@ if errorlevel 1 (
 
 echo [+] Ставлю браузер Chromium для Playwright...
 "%VPY%" -m playwright install chromium
+"%VPY%" -m patchright install chromium >nul 2>nul
 if errorlevel 1 (
   echo [!] Не удалось установить Chromium для Playwright.
   echo.
