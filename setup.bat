@@ -9,104 +9,73 @@ echo.
 echo                 ZoAPI
 echo        =====================
 echo.
-echo  Первичная установка окружения
+echo  Pervichnaya ustanovka okruzheniya
 echo.
 
 set "PYTHON_EXE="
 
 where py >nul 2>nul
-if not errorlevel 1 (
-  py -3 -c "import sys" >nul 2>nul
-  if not errorlevel 1 set "PYTHON_EXE=py -3"
-)
+if %ERRORLEVEL%==0 set "PYTHON_EXE=py -3"
 
-if "%PYTHON_EXE%"=="" (
+if not defined PYTHON_EXE (
   where python >nul 2>nul
-  if not errorlevel 1 (
-    python -c "import sys" >nul 2>nul
-    if not errorlevel 1 set "PYTHON_EXE=python"
-  )
+  if %ERRORLEVEL%==0 set "PYTHON_EXE=python"
 )
 
-if "%PYTHON_EXE%"=="" (
-  echo [!] Python 3.10+ не найден.
-  echo     Установи Python и повтори запуск.
+if not defined PYTHON_EXE (
+  echo [!] Python ne nayden v PATH. Ustanovi Python 3.12 ili 3.13.
   echo.
   pause
   exit /b 1
 )
 
-%PYTHON_EXE% -c "import sys; raise SystemExit(0 if sys.version_info >= (3,10) else 1)"
-if errorlevel 1 (
-  echo [!] Нужен Python 3.10 или новее.
-  %PYTHON_EXE% --version
-  echo.
-  pause
-  exit /b 1
-)
+echo [+] Python: %PYTHON_EXE%
 
 if not exist ".venv\Scripts\python.exe" (
-  echo [+] Создаю виртуальное окружение...
+  echo [+] Sozdayu virtualnoe okruzhenie .venv ...
   %PYTHON_EXE% -m venv .venv
-  if errorlevel 1 (
-    echo [!] Не удалось создать .venv
+  if not exist ".venv\Scripts\python.exe" (
+    echo [!] Ne udalos sozdat .venv. Proverki Python.
     echo.
     pause
     exit /b 1
   )
-) else (
-  echo [+] Виртуальное окружение уже есть.
 )
 
 set "VPY=.venv\Scripts\python.exe"
 
-echo [+] Обновляю pip / setuptools / wheel...
+echo [+] Obnovlyayu pip / setuptools / wheel ...
 "%VPY%" -m pip install --quiet --upgrade pip setuptools wheel
-if errorlevel 1 (
-  echo [!] Не удалось обновить pip / setuptools / wheel
-  echo.
-  pause
-  exit /b 1
-)
 
-echo [+] Устанавливаю зависимости проекта...
+echo [+] Stavlyu zavisimosti iz requirements.txt ...
 "%VPY%" -m pip uninstall -y playwright-stealth >nul 2>nul
 "%VPY%" -m pip install -r requirements.txt
-if errorlevel 1 (
-  echo [!] Не удалось поставить зависимости.
-  echo     Если упало на pydantic-core / pyo3 — у тебя слишком свежий Python.
-  echo     Поставь Python 3.12 или 3.13 и повтори setup.bat.
+if %ERRORLEVEL% NEQ 0 (
+  echo.
+  echo [!] Ne udalos postavit zavisimosti.
+  echo     Esli upalo na pydantic-core / pyo3 — Python slishkom svezhiy.
+  echo     Postav Python 3.12 ili 3.13 i povtori setup.bat.
   echo.
   pause
   exit /b 1
 )
 
-echo [+] Проверяю Python-модули...
-"%VPY%" -c "import fastapi, uvicorn, httpx, pydantic, questionary, rich, playwright, patchright; print('ok')"
-if errorlevel 1 (
-  echo [!] Проверка импортов не прошла.
+echo [+] Proveryayu importy ...
+"%VPY%" -c "import fastapi, uvicorn, httpx, pydantic, questionary, rich, playwright, patchright"
+if %ERRORLEVEL% NEQ 0 (
+  echo.
+  echo [!] Ne vse importy proshli. Otkroy log vyshe.
   echo.
   pause
   exit /b 1
 )
 
-echo [+] Ставлю браузер Chromium для Playwright...
+echo [+] Skachivayu Chromium dlya Playwright ...
 "%VPY%" -m playwright install chromium
-if errorlevel 1 (
-  echo [!] Не удалось установить Chromium для Playwright.
-  echo.
-  pause
-  exit /b 1
-)
-
-echo [+] Ставлю браузер Chromium для patchright...
-"%VPY%" -m patchright install chromium
-if errorlevel 1 (
-  echo [!] Не удалось установить Chromium для patchright. Продолжаю.
-)
+"%VPY%" -m patchright install chromium >nul 2>nul
 
 echo.
-echo [+] Готово. Сейчас запущу ZoAPI...
+echo [+] Gotovo. Seychas zapuschu ZoAPI...
 echo.
 call run.bat
 exit /b %ERRORLEVEL%

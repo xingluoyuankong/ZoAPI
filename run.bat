@@ -11,8 +11,7 @@ echo        =====================
 echo.
 
 if not exist ".venv\Scripts\python.exe" (
-  echo [!] Окружение не найдено.
-  echo     Сначала запусти setup.bat
+  echo [!] Okruzhenie ne naydeno. Snachala zapusti setup.bat
   echo.
   pause
   exit /b 1
@@ -21,9 +20,8 @@ if not exist ".venv\Scripts\python.exe" (
 set "VPY=.venv\Scripts\python.exe"
 
 "%VPY%" -c "import fastapi, uvicorn, httpx, pydantic, questionary, rich, playwright, patchright" >nul 2>nul
-if errorlevel 1 (
-  echo [!] Похоже, зависимости не поставлены до конца.
-  echo     Запусти setup.bat
+if %ERRORLEVEL% NEQ 0 (
+  echo [!] Zavisimosti ne polnostyu ustanovleny. Zapusti setup.bat
   echo.
   pause
   exit /b 1
@@ -34,7 +32,7 @@ set "EXITCODE=%ERRORLEVEL%"
 
 if not "%EXITCODE%"=="0" (
   echo.
-  echo [!] Приложение завершилось с кодом %EXITCODE%.
+  echo [!] Prilozhenie zavershilos s kodom %EXITCODE%.
   echo.
   pause
 )
