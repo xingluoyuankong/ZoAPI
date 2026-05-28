@@ -23,6 +23,7 @@ import json
 import os
 import re
 import subprocess
+import sys
 from pathlib import Path
 from typing import Iterable
 
@@ -403,12 +404,57 @@ def uninstall_codex() -> list[str]:
 
 CLAUDE_DIR = Path.home() / ".claude"
 CLAUDE_SETTINGS = CLAUDE_DIR / "settings.json"
+CLAUDE_CREDENTIALS = CLAUDE_DIR / ".credentials.json"
+CLAUDE_CREDENTIALS_BACKUP = CLAUDE_DIR / ".credentials.zoapi-backup.json"
+
+
+def _claude_purge_stored_credentials(log: list[str]) -> None:
+    """Удаляем сохранённые `claude /login` креды, которые перебивают
+    ANTHROPIC_AUTH_TOKEN и приводят к Auth conflict.
+
+    Источников два:
+      * ~/.claude/.credentials.json (Linux / Windows / fallback на macOS)
+      * macOS Keychain, entry "Claude Code-credentials"
+    Делаем бэкап creds.json перед удалением, чтобы юзер мог восстановить
+    нативный логин в Anthropic если решит откатиться от ZoAPI.
+    """
+    # 1) ~/.claude/.credentials.json
+    if CLAUDE_CREDENTIALS.exists():
+        try:
+            # ротация бэкапа: всегда сохраняем последний предыдущий стейт
+            if CLAUDE_CREDENTIALS_BACKUP.exists():
+                CLAUDE_CREDENTIALS_BACKUP.unlink()
+            CLAUDE_CREDENTIALS.rename(CLAUDE_CREDENTIALS_BACKUP)
+            log.append(f"backed up & removed {CLAUDE_CREDENTIALS} -> {CLAUDE_CREDENTIALS_BACKUP}")
+        except Exception as e:  # noqa: BLE001
+            log.append(f"warn: could not move {CLAUDE_CREDENTIALS}: {e}")
+
+    # 2) macOS Keychain "Claude Code-credentials"
+    if sys_platform_is_macos():
+        try:
+            r = subprocess.run(
+                ["security", "delete-generic-password", "-s", "Claude Code-credentials"],
+                capture_output=True, text=True, timeout=10, check=False,
+            )
+            if r.returncode == 0:
+                log.append("removed macOS Keychain entry: Claude Code-credentials")
+            # неудача — креды просто не было, это норм
+        except FileNotFoundError:
+            pass
+        except Exception as e:  # noqa: BLE001
+            log.append(f"warn: keychain cleanup failed: {e}")
+
+
+def sys_platform_is_macos() -> bool:
+    import sys
+    return sys.platform == "darwin"
 
 
 def install_claude() -> list[str]:
-    """Прописать Claude Code: env + ~/.claude/settings.json. Жёстко: удаляет
-    ANTHROPIC_API_KEY изо всех мест (env vars + settings.json env block +
-    stray rc-строки) чтобы не было Auth-conflict у юзеров со старой установкой."""
+    """Прописать Claude Code: env + ~/.claude/settings.json. Жёстко:
+    удаляем ANTHROPIC_API_KEY изо ВСЕХ мест (env vars + settings.json env
+    block + stray rc-строки + ~/.claude/.credentials.json + macOS Keychain).
+    Иначе у юзеров со старым `claude /login` будет вечный Auth conflict."""
     log = set_env_vars(
         {
             "ANTHROPIC_BASE_URL": PROXY_URL,
@@ -422,6 +468,10 @@ def install_claude() -> list[str]:
             _strip_unix_stray_export(rc, "ANTHROPIC_API_KEY")
 
     CLAUDE_DIR.mkdir(parents=True, exist_ok=True)
+
+    # Удалить сохранённые `claude /login` креды, которые перебивают наш token
+    _claude_purge_stored_credentials(log)
+
     data: dict = {}
     if CLAUDE_SETTINGS.exists():
         try:
@@ -444,6 +494,10 @@ def install_claude() -> list[str]:
         encoding="utf-8",
     )
     log.append(f"wrote {CLAUDE_SETTINGS}")
+    log.append(
+        "hint: if Claude Code still shows 'Auth conflict', run "
+        "`claude /logout` once (say No to API key approval on next start)."
+    )
     return log
 
 
@@ -451,6 +505,13 @@ def uninstall_claude() -> list[str]:
     log = unset_env_vars(
         ["ANTHROPIC_BASE_URL", "ANTHROPIC_AUTH_TOKEN", "ANTHROPIC_API_KEY"]
     )
+    # Восстановить старые credentials если делали бэкап
+    if CLAUDE_CREDENTIALS_BACKUP.exists() and not CLAUDE_CREDENTIALS.exists():
+        try:
+            CLAUDE_CREDENTIALS_BACKUP.rename(CLAUDE_CREDENTIALS)
+            log.append(f"restored {CLAUDE_CREDENTIALS} from backup")
+        except Exception as e:  # noqa: BLE001
+            log.append(f"warn: could not restore credentials: {e}")
     if CLAUDE_SETTINGS.exists():
         try:
             data = json.loads(CLAUDE_SETTINGS.read_text(encoding="utf-8")) or {}
@@ -550,8 +611,13 @@ OPENCODE_PROVIDER = {
 
 
 def install_opencode() -> list[str]:
-    """Прописать OpenCode: ЖЁСТКО перезаписать provider.zoapi на свежий
-    каталог. Других провайдеров (openrouter / anthropic / ...) НЕ трогаем."""
+    """Прописать OpenCode: добавить (или обновить) provider.zoapi.
+
+    ВАЖНО: остальных провайдеров (openrouter / anthropic / openai / ...)
+    НЕ трогаем. Никаких удалений — только мерж: ключ `provider["zoapi"]`
+    заменяется на свежий каталог, все остальные ключи `provider.*`
+    сохраняются ровно как были.
+    """
     log: list[str] = []
     OPENCODE_DIR.mkdir(parents=True, exist_ok=True)
 
@@ -571,8 +637,12 @@ def install_opencode() -> list[str]:
     provider = data.get("provider")
     if not isinstance(provider, dict):
         provider = {}
-    # ЖЁСТКАЯ ПЕРЕЗАПИСЬ — старый zoapi может содержать устаревшие/битые поля,
-    # мерж их сохранил бы. Целиком меняем на свежий каталог.
+
+    # Считаем сколько чужих провайдеров сейчас есть (для лога — чтобы
+    # юзер видел, что мы их сохранили).
+    other_providers = [k for k in provider.keys() if k != OPENCODE_PROVIDER_KEY]
+
+    # Только наш ключ — остальные не трогаем.
     provider[OPENCODE_PROVIDER_KEY] = OPENCODE_PROVIDER
     data["provider"] = provider
 
@@ -581,6 +651,11 @@ def install_opencode() -> list[str]:
         encoding="utf-8",
     )
     log.append(f"wrote {OPENCODE_CONFIG} (provider.{OPENCODE_PROVIDER_KEY})")
+    if other_providers:
+        log.append(
+            f"preserved {len(other_providers)} other provider(s): "
+            + ", ".join(other_providers)
+        )
     return log
 
 

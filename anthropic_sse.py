@@ -36,6 +36,8 @@ import time
 import uuid
 from typing import Any, AsyncIterator, Iterator
 
+from tool_parser import ToolCallTagParser
+
 
 def sse(event: str, data: dict[str, Any]) -> str:
     return f"event: {event}\ndata: {json.dumps(data, ensure_ascii=False)}\n\n"
@@ -43,80 +45,6 @@ def sse(event: str, data: dict[str, Any]) -> str:
 
 def new_message_id() -> str:
     return "msg_" + uuid.uuid4().hex[:24]
-
-
-class ToolCallTagParser:
-    OPEN_RE = re.compile(r'<zo:call\b([^>]*)>', re.DOTALL)
-    CLOSE_RE = re.compile(r'</zo:call>')
-    ATTR_RE = re.compile(r'(\w+)\s*=\s*"([^"]*)"')
-    OPEN_PARTIAL = '<zo:call'
-    CLOSE_PARTIAL = '</zo:call>'
-
-    def __init__(self) -> None:
-        self.buf = ''
-        self.in_call = False
-        self._cur_name = ''
-        self._cur_id = ''
-
-    @staticmethod
-    def _safe_text_len(buf: str, marker: str) -> int:
-        n = len(buf)
-        m = len(marker)
-        max_suffix = min(n, m - 1)
-        for k in range(max_suffix, 0, -1):
-            if buf.endswith(marker[:k]):
-                return n - k
-        return n
-
-    def feed(self, text: str):
-        if not text:
-            return
-        self.buf += text
-        while True:
-            if not self.in_call:
-                m = self.OPEN_RE.search(self.buf)
-                if m:
-                    if m.start() > 0:
-                        yield ('text', self.buf[:m.start()])
-                    attrs = dict(self.ATTR_RE.findall(m.group(1)))
-                    self._cur_name = attrs.get('name', 'unknown')
-                    self._cur_id = attrs.get('id') or ('toolu_' + uuid.uuid4().hex[:24])
-                    self.buf = self.buf[m.end():]
-                    self.in_call = True
-                    yield ('tool_open', {'name': self._cur_name, 'id': self._cur_id})
-                else:
-                    safe = self._safe_text_len(self.buf, self.OPEN_PARTIAL)
-                    if safe > 0:
-                        yield ('text', self.buf[:safe])
-                        self.buf = self.buf[safe:]
-                    return
-            else:
-                m = self.CLOSE_RE.search(self.buf)
-                if m:
-                    inner = self.buf[:m.start()]
-                    if inner:
-                        yield ('tool_args', inner)
-                    yield ('tool_close', None)
-                    self.buf = self.buf[m.end():]
-                    self.in_call = False
-                else:
-                    safe = self._safe_text_len(self.buf, self.CLOSE_PARTIAL)
-                    if safe > 0:
-                        yield ('tool_args', self.buf[:safe])
-                        self.buf = self.buf[safe:]
-                    return
-
-    def finalize(self):
-        if self.in_call:
-            if self.buf:
-                yield ('tool_args', self.buf)
-            yield ('tool_close', None)
-            self.in_call = False
-            self.buf = ''
-        elif self.buf:
-            yield ('text', self.buf)
-            self.buf = ''
-
 
 
 class AnthropicStreamTranslator:
@@ -145,6 +73,7 @@ class AnthropicStreamTranslator:
         self._tool_buf = ""
         self.tool_parser = ToolCallTagParser()
         self._tool_block_open = False
+        self._emitted_tool_use = False
 
     def _handle_streamed_text(self, text: str) -> Iterator[str]:
         for kind, payload in self.tool_parser.feed(text):
@@ -214,6 +143,11 @@ class AnthropicStreamTranslator:
             )
             self.current_block_kind = None
 
+        # КРИТИЧНО: если в этом ответе был хотя бы один tool_use блок —
+        # stop_reason обязан быть "tool_use", иначе Claude Code НЕ исполнит тул.
+        if self._emitted_tool_use:
+            self.stop_reason = "tool_use"
+
         yield sse(
             "message_delta",
             {
@@ -277,6 +211,7 @@ class AnthropicStreamTranslator:
                 "input": {},
             }
             self._tool_buf = ""
+            self._emitted_tool_use = True
         else:
             block = {"type": "text", "text": ""}
 
@@ -347,6 +282,7 @@ class AnthropicStreamTranslator:
                 tool_name = part.get("tool_name") or part.get("name") or "tool"
                 tool_id = part.get("tool_call_id") or part.get("id") or ""
                 yield from self._open_block("tool_use", tool_name=tool_name, tool_id=tool_id)
+                self._emitted_tool_use = True
                 args = part.get("args") or part.get("arguments")
                 if args is not None:
                     partial = args if isinstance(args, str) else json.dumps(args, ensure_ascii=False)
@@ -369,6 +305,7 @@ class AnthropicStreamTranslator:
                 partial = delta.get("args_delta") or delta.get("content_delta") or ""
                 if self.current_block_kind != "tool_use":
                     yield from self._open_block("tool_use")
+                self._emitted_tool_use = True
                 if partial:
                     if not isinstance(partial, str):
                         partial = json.dumps(partial, ensure_ascii=False)
