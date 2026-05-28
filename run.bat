@@ -1,27 +1,28 @@
 @echo off
-REM Запускает zo-claude-proxy на Windows.
-REM Создаёт venv в .\.venv, ставит зависимости, поднимает прокси.
+chcp 65001 > nul
 setlocal
-
 cd /d "%~dp0"
 
-if not exist ".env" (
-  if exist ".env.example" (
-    copy ".env.example" ".env" >nul
-    echo Создан .env из .env.example - открой и впиши ZO_API_KEY
-    exit /b 1
-  )
-)
-
 if not exist ".venv\Scripts\python.exe" (
-  echo Создаю venv...
+  echo Creating venv...
   python -m venv .venv
   if errorlevel 1 (
-    echo Не нашёл python в PATH. Поставь Python 3.10+ и проверь "python --version".
+    echo Python not found. Install Python 3.10+ and ensure "python" works in PATH.
     exit /b 1
   )
-  ".venv\Scripts\python.exe" -m pip install --upgrade pip
-  ".venv\Scripts\pip.exe" install -r requirements.txt
+  ".venv\Scripts\pip.exe" install -q -r requirements.txt
+)
+
+REM Если нет ни одного аккаунта - откроем мастер
+".venv\Scripts\python.exe" setup.py --check
+if errorlevel 1 (
+  echo No usable Zo account. Opening setup wizard...
+  ".venv\Scripts\python.exe" setup.py
+  ".venv\Scripts\python.exe" setup.py --check
+  if errorlevel 1 (
+    echo Still no account. Exiting.
+    exit /b 1
+  )
 )
 
 ".venv\Scripts\python.exe" proxy.py
