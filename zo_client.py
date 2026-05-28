@@ -158,13 +158,17 @@ class ZoClient:
         return r.json().get("models", [])
 
     async def list_personas(self, account: Account) -> list[dict[str, Any]]:
+        """GET /personas/ — куки, без API-ключа (так делает веб-UI)."""
         r = await self._get(account).get(
-            "/personas/available",
+            "/personas/",
             headers=_headers_for(account),
             cookies=_cookies_for(account),
         )
         _raise_for_status(r)
-        return r.json().get("personas", [])
+        data = r.json()
+        if isinstance(data, list):
+            return data
+        return data.get("personas", []) if isinstance(data, dict) else []
 
     async def create_persona(
         self,
@@ -219,23 +223,26 @@ class ZoClient:
         return r.json()
 
     async def set_main_persona(self, account: Account, persona_id: str) -> bool:
-        """fetches current active map, sets main=persona_id, PUTs back to /personas/active. Returns True on success."""
-        r = await self._get(account).get(
-            "/personas/active",
-            headers=_headers_for(account),
-            cookies=_cookies_for(account),
-        )
-        _raise_for_status(r)
-        active = r.json()
-        active["main"] = persona_id
+        """Делает персону активной для канала main.
+
+        PUT /personas/active/{persona_id} с пустым body — как делает веб-UI.
+        Возвращает True если success=true в ответе.
+        """
         r = await self._get(account).put(
-            "/personas/active",
-            json=active,
+            f"/personas/active/{persona_id}",
             headers=_headers_for(account),
             cookies=_cookies_for(account),
         )
-        _raise_for_status(r)
-        return True
+        if r.status_code != 200:
+            log.warning(
+                "[%s] set_main_persona: HTTP %d body=%s",
+                account.label, r.status_code, r.text[:200]
+            )
+            return False
+        try:
+            return bool(r.json().get("success", False))
+        except Exception:
+            return r.status_code == 200
 
     async def list_rules(self, account: Account) -> list[dict[str, Any]]:
         try:
@@ -284,51 +291,83 @@ class ZoClient:
         self, account: Account, name: str, prompt: str
     ) -> str | None:
         """
-        Полностью настраивает bridge-персону: ищет по name в /personas/available,
-        если нет — создаёт через POST /personas/ с scopes=[], затем дёргает
-        update_persona_scopes(scopes=[]) чтобы убедиться, что серверные тулы Zo
-        для неё точно отключены.
-
-        Возвращает persona_id или None при ошибке.
+        Полностью настраивает bridge-персону. Логика как у веб-UI:
+          1. GET /personas/                 — ищем по name
+          2. POST /personas/                — если нет, создаём со scopes=[]
+          3. PUT  /personas/active/{id}     — делаем активной
+          4. GET  /personas/active          — проверяем что main == id
+        Между шагами sleep(1) чтобы бэкенд успел.
         """
+        import asyncio
+        # --- 1) list ---
         try:
             personas = await self.list_personas(account)
         except Exception as e:
-            log.warning("[%s] ensure_bridge_persona: list_personas failed: %s", account.label, e)
+            log.warning("[%s] list_personas failed: %s", account.label, e)
             return None
-
-        pid: str | None = None
-        for p in personas:
-            if p.get("name") == name:
-                pid = p.get("id")
+        log.info(
+            "[%s] ensure_bridge_persona: %d existing, looking for %r",
+            account.label, len(personas), name,
+        )
+        pid = None
+        for pp in personas:
+            if pp.get("name") == name:
+                pid = pp.get("id")
                 break
 
-        log.info("[%s] ensure_bridge_persona: %d existing personas, match=%s", account.label, len(personas), pid)
-
+        # --- 2) create if missing ---
         if not pid:
             try:
-                p = await self.create_persona(account, name, prompt, scopes=[])
-                pid = p.get("id") if isinstance(p, dict) else None
-                log.info("[%s] ensure_bridge_persona: created new persona id=%s", account.label, pid)
+                created = await self.create_persona(
+                    account, name, prompt, scopes=[]
+                )
+                pid = created.get("id") if isinstance(created, dict) else None
+                log.info(
+                    "[%s] ensure_bridge_persona: created persona id=%s",
+                    account.label, pid,
+                )
             except Exception as e:
-                log.exception("[%s] ensure_bridge_persona: create_persona FAILED: %s", account.label, e)
+                log.exception(
+                    "[%s] ensure_bridge_persona: create_persona FAILED: %s",
+                    account.label, e,
+                )
                 return None
+            await asyncio.sleep(1.0)
+        else:
+            log.info("[%s] ensure_bridge_persona: persona already exists id=%s", account.label, pid)
 
         if not pid:
-            log.warning("[%s] ensure_bridge_persona: no pid after create/lookup", account.label)
+            log.warning("[%s] ensure_bridge_persona: no pid after create", account.label)
             return None
 
-        try:
-            ok = await self.update_persona_scopes(account, pid, [])
-            log.info("[%s] ensure_bridge_persona: update_persona_scopes(scopes=[]) ok=%s", account.label, ok)
-        except Exception as e:
-            log.exception("[%s] ensure_bridge_persona: update_persona_scopes FAILED: %s", account.label, e)
-
+        # --- 3) set main ---
         try:
             ok = await self.set_main_persona(account, pid)
             log.info("[%s] ensure_bridge_persona: set_main_persona ok=%s pid=%s", account.label, ok, pid)
         except Exception as e:
             log.exception("[%s] ensure_bridge_persona: set_main_persona FAILED: %s", account.label, e)
+            return pid
+        await asyncio.sleep(1.0)
+
+        # --- 4) verify ---
+        try:
+            active = await self.get_active_personas(account)
+            current_main = active.get("main")
+            if current_main == pid:
+                log.info("[%s] ensure_bridge_persona: VERIFIED main=%s", account.label, pid)
+            else:
+                log.warning(
+                    "[%s] ensure_bridge_persona: main mismatch — expected %s got %s",
+                    account.label, pid, current_main,
+                )
+                # retry one more time
+                await asyncio.sleep(1.0)
+                try:
+                    await self.set_main_persona(account, pid)
+                except Exception:
+                    pass
+        except Exception as e:
+            log.warning("[%s] ensure_bridge_persona: verify failed: %s", account.label, e)
 
         return pid
 
