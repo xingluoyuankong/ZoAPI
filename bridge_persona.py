@@ -198,10 +198,12 @@ async def bootstrap_account(client: "ZoClient", account: "Account") -> str | Non
 
 async def bootstrap_all(client: "ZoClient", store: "AccountStore") -> None:
     """Прогоняем bootstrap по всем usable-аккаунтам параллельно."""
+    log.info("bootstrap_all: total=%d", len(store.accounts))
     targets = [a for a in store.accounts if a.is_usable()]
     if not targets:
+        log.warning("bootstrap_all: NO usable accounts (total=%d, usable=0) — bridge persona will NOT be created", len(store.accounts))
         return
-    log.info("Bootstrapping bridge persona on %d account(s)", len(targets))
+    log.info("bootstrap_all: bootstrapping bridge persona on %d usable account(s): %s", len(targets), [a.label for a in targets])
     results = await asyncio.gather(
         *(bootstrap_account(client, a) for a in targets),
         return_exceptions=True,

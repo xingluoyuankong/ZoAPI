@@ -819,10 +819,41 @@ async def admin_accounts() -> dict[str, Any]:
                 "error_streak": a.error_streak,
                 "last_err": a.last_err,
                 "disabled": a.disabled,
+                "bridge_persona_id": a.bridge_persona_id,
+                "balance_cents": a.balance_cents,
             }
             for a in STORE.accounts
         ],
     }
+
+
+@app.post("/v1/admin/bootstrap")
+async def admin_bootstrap() -> dict[str, Any]:
+    """Принудительно прогоняет bridge_persona.bootstrap_all + возвращает
+    результаты по каждому аккаунту. Полезно если ты хочешь увидеть в JSON,
+    какие персоны создал прокси и какая активная."""
+    import bridge_persona
+    results: list[dict[str, Any]] = []
+    for a in STORE.accounts:
+        if not a.is_usable():
+            results.append({"label": a.label, "ok": False, "reason": "not usable"})
+            continue
+        try:
+            pid = await bridge_persona.bootstrap_account(ZO, a)
+            try:
+                active = await ZO.get_active_personas(a)
+            except Exception:
+                active = None
+            results.append({
+                "label": a.label,
+                "ok": bool(pid),
+                "bridge_persona_id": pid,
+                "active_main": (active or {}).get("main") if isinstance(active, dict) else None,
+            })
+        except Exception as e:  # noqa: BLE001
+            results.append({"label": a.label, "ok": False, "error": str(e)})
+    STORE.save()
+    return {"results": results}
 
 
 @app.post("/v1/admin/active")

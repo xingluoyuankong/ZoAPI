@@ -284,10 +284,10 @@ class ZoClient:
         self, account: Account, name: str, prompt: str
     ) -> str | None:
         """
-        Ищет персону по name в /personas/available. Если нет — создаёт
-        через POST /personas/ с scopes=[]. Затем (на всякий случай) дёргает
-        update_persona_scopes(scopes=[]) чтобы убедиться, что серверные
-        тулы Zo для неё точно отключены.
+        Полностью настраивает bridge-персону: ищет по name в /personas/available,
+        если нет — создаёт через POST /personas/ с scopes=[], затем дёргает
+        update_persona_scopes(scopes=[]) чтобы убедиться, что серверные тулы Zo
+        для неё точно отключены.
 
         Возвращает persona_id или None при ошибке.
         """
@@ -303,24 +303,33 @@ class ZoClient:
                 pid = p.get("id")
                 break
 
+        log.info("[%s] ensure_bridge_persona: %d existing personas, match=%s", account.label, len(personas), pid)
+
         if not pid:
             try:
                 p = await self.create_persona(account, name, prompt, scopes=[])
-                pid = p.get("id")
-            except Exception:
-                pass
+                pid = p.get("id") if isinstance(p, dict) else None
+                log.info("[%s] ensure_bridge_persona: created new persona id=%s", account.label, pid)
+            except Exception as e:
+                log.exception("[%s] ensure_bridge_persona: create_persona FAILED: %s", account.label, e)
+                return None
 
-        if pid:
-            try:
-                await self.update_persona_scopes(account, pid, [])
-            except Exception:
-                pass
-            # КРИТИЧНО: сделать персону активной для канала main.
-            # Без этого /ask будет использовать дефолтную
-            try:
-                await self.set_main_persona(account, pid)
-            except Exception:
-                pass
+        if not pid:
+            log.warning("[%s] ensure_bridge_persona: no pid after create/lookup", account.label)
+            return None
+
+        try:
+            ok = await self.update_persona_scopes(account, pid, [])
+            log.info("[%s] ensure_bridge_persona: update_persona_scopes(scopes=[]) ok=%s", account.label, ok)
+        except Exception as e:
+            log.exception("[%s] ensure_bridge_persona: update_persona_scopes FAILED: %s", account.label, e)
+
+        try:
+            ok = await self.set_main_persona(account, pid)
+            log.info("[%s] ensure_bridge_persona: set_main_persona ok=%s pid=%s", account.label, ok, pid)
+        except Exception as e:
+            log.exception("[%s] ensure_bridge_persona: set_main_persona FAILED: %s", account.label, e)
+
         return pid
 
     async def list_conversations(self, account: Account) -> list[dict[str, Any]]:
