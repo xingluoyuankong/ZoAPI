@@ -863,11 +863,45 @@ async def admin_bootstrap() -> dict[str, Any]:
                 "ok": bool(pid),
                 "bridge_persona_id": pid,
                 "active_main": (active or {}).get("main") if isinstance(active, dict) else None,
+                "api_key_id": a.api_key_id,
+                "api_key_prefix": (a.api_key[:14] + "…") if a.api_key else None,
+                "api_key_present": bool(a.api_key),
             })
         except Exception as e:  # noqa: BLE001
             results.append({"label": a.label, "ok": False, "error": str(e)})
     STORE.save()
     return {"results": results}
+
+
+@app.post("/v1/admin/api-key/recreate")
+async def admin_api_key_recreate(req: Request) -> dict[str, Any]:
+    body: dict[str, Any] = {}
+    try:
+        body = await req.json()
+    except Exception:
+        pass
+    label = (body or {}).get("label") or STORE.active_label
+    acc = next((a for a in STORE.accounts if a.label == label), None)
+    if not acc:
+        raise HTTPException(status_code=404, detail=f"no account labeled {label}")
+    import time as _t
+    name = f"zoapi-bridge-{int(_t.time())}"
+    try:
+        created = await ZO.create_api_key(acc, name)
+    except Exception as e:
+        raise HTTPException(status_code=502, detail=f"create_api_key failed: {e}")
+    if not created or not created.get("key"):
+        raise HTTPException(status_code=502, detail="create_api_key returned no key")
+    acc.api_key = created.get("key")
+    acc.api_key_id = created.get("id")
+    STORE.save()
+    return {
+        "ok": True,
+        "label": label,
+        "api_key_id": acc.api_key_id,
+        "api_key_prefix": (acc.api_key[:14] + "…") if acc.api_key else None,
+        "name": name,
+    }
 
 
 @app.post("/v1/admin/active")
