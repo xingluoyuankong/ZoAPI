@@ -178,6 +178,24 @@ _REMAP_TABLE: dict[str, list[tuple[str, dict[str, str]]]] = {
 }
 
 
+# Алиасы — если модель сгенерила имя из этого списка, перенаправляем
+# на каноническое Zo-имя ДО применения _REMAP_TABLE. Сравнение
+# case-insensitive по ключу.
+NAME_ALIASES: dict[str, str] = {
+    "powershell": "bash",
+    "pwsh": "bash",
+    "shell": "bash",
+    "cmd": "bash",
+    "terminal": "bash",
+    "exec": "bash",
+    "execute": "bash",
+    "file_read": "read_file",
+    "FileRead": "read_file",
+    "ReadFile": "read_file",
+    "file_writ": "write_file",
+}
+
+
 def is_zo_server_tool(name: str) -> bool:
     return name in ZO_SERVER_TOOL_NAMES
 
@@ -203,6 +221,10 @@ def remap_tool_name(
     if not names_set:
         return None
     lower_map = {n.lower(): n for n in names_set}
+
+    # Сначала пробуем разрешить через NAME_ALIASES (case-insensitive).
+    if zo_name.lower() in NAME_ALIASES:
+        zo_name = NAME_ALIASES[zo_name.lower()]
 
     if is_zo_server_tool(zo_name):
         candidates = _REMAP_TABLE.get(zo_name, [])

@@ -208,6 +208,78 @@ class ZoClient:
                 return True
         return False
 
+    async def get_active_personas(self, account: Account) -> dict[str, Any]:
+        """GET /personas/active, returns the {main, greeting, sms, email, telegram, discord, slack, schedule} dict."""
+        r = await self._get(account).get(
+            "/personas/active",
+            headers=_headers_for(account),
+            cookies=_cookies_for(account),
+        )
+        _raise_for_status(r)
+        return r.json()
+
+    async def set_main_persona(self, account: Account, persona_id: str) -> bool:
+        """fetches current active map, sets main=persona_id, PUTs back to /personas/active. Returns True on success."""
+        r = await self._get(account).get(
+            "/personas/active",
+            headers=_headers_for(account),
+            cookies=_cookies_for(account),
+        )
+        _raise_for_status(r)
+        active = r.json()
+        active["main"] = persona_id
+        r = await self._get(account).put(
+            "/personas/active",
+            json=active,
+            headers=_headers_for(account),
+            cookies=_cookies_for(account),
+        )
+        _raise_for_status(r)
+        return True
+
+    async def list_rules(self, account: Account) -> list[dict[str, Any]]:
+        try:
+            r = await self._get(account).get(
+                "/rules/",
+                headers=_headers_for(account),
+                cookies=_cookies_for(account),
+            )
+            if r.status_code != 200:
+                return []
+            data = r.json()
+            if isinstance(data, list):
+                return data
+            return data.get("rules", []) if isinstance(data, dict) else []
+        except Exception:
+            return []
+
+    async def create_rule(
+        self, account: Account, condition: str, instruction: str
+    ) -> dict[str, Any] | None:
+        try:
+            r = await self._get(account).post(
+                "/rules/",
+                json={"condition": condition, "instruction": instruction},
+                headers=_headers_for(account),
+                cookies=_cookies_for(account),
+            )
+            if r.status_code in (200, 201):
+                return r.json()
+        except Exception:
+            pass
+        return None
+
+    async def ensure_rule(
+        self, account: Account, instruction: str, condition: str = ""
+    ) -> str | None:
+        """Find a rule whose instruction matches; create if missing. Returns rule id or None."""
+        rules = await self.list_rules(account)
+        for r in rules:
+            if r.get("instruction") == instruction:
+                return r.get("id")
+        created = await self.create_rule(account, condition, instruction)
+        return created.get("id") if isinstance(created, dict) else None
+
     async def ensure_bridge_persona(
         self, account: Account, name: str, prompt: str
     ) -> str | None:
@@ -241,6 +313,12 @@ class ZoClient:
         if pid:
             try:
                 await self.update_persona_scopes(account, pid, [])
+            except Exception:
+                pass
+            # КРИТИЧНО: сделать персону активной для канала main.
+            # Без этого /ask будет использовать дефолтную
+            try:
+                await self.set_main_persona(account, pid)
             except Exception:
                 pass
         return pid

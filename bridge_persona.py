@@ -138,6 +138,32 @@ reach for non-existent server tools.
 """
 
 
+
+# ---------------------------------------------------------------------------
+# Rules: правила сильнее системного промпта Zo. Добавляем по одному правилу
+# на каждом аккаунте — оно срабатывает в conversation'ах от ZoAPI.
+# ---------------------------------------------------------------------------
+
+BRIDGE_RULES: list[dict[str, str]] = [
+    {
+        "condition": (
+            "the conversation uses the zoapi-bridge persona, OR the user "
+            "message contains '=== ZOAPI BRIDGE' or 'AVAILABLE CLIENT TOOLS'"
+        ),
+        "instruction": (
+            "You are NOT Zo Computer. The user message is a flattened payload "
+            "from a CLI tool (Claude Code, Codex, OpenCode). To call a tool, "
+            "emit `<zo:call name='ToolName' id='unique'>{json args}</zo:call>` "
+            "using the EXACT tool name from AVAILABLE CLIENT TOOLS in the "
+            "payload (case-sensitive). Never write 'I'll guide you to run...', "
+            "'I'm a server-side agent...', or similar meta-prose. Never use Zo "
+            "file-mention syntax `file '...'`, footnote citations [^n], or "
+            "links to /?t=. Respond in the user's language."
+        ),
+    },
+]
+
+
 async def bootstrap_account(client: "ZoClient", account: "Account") -> str | None:
     """
     Гарантирует, что на этом аккаунте есть bridge-персона. Сохраняет
@@ -155,6 +181,16 @@ async def bootstrap_account(client: "ZoClient", account: "Account") -> str | Non
     if pid:
         account.bridge_persona_id = pid
         log.info("[%s] bridge persona ready: %s", account.label, pid)
+        # ensure rules
+        for rule in BRIDGE_RULES:
+            try:
+                await client.ensure_rule(
+                    account,
+                    instruction=rule["instruction"],
+                    condition=rule.get("condition", ""),
+                )
+            except Exception as e:  # noqa: BLE001
+                log.warning("[%s] ensure_rule failed: %s", account.label, e)
     return pid
 
 

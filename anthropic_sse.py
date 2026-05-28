@@ -96,6 +96,10 @@ class AnthropicStreamTranslator:
         self._zo_tool_rename: dict[str, str] = {}
         self._zo_tool_arg_buf: list[str] = []
 
+        # state for in-text <zo:call> tool calls (parsed from model text)
+        self._zo_text_tool_rename: dict[str, str] = {}
+        self._zo_text_tool_arg_buf: list[str] = []
+
     def _handle_streamed_text(self, text: str) -> Iterator[str]:
         for kind, payload in self.tool_parser.feed(text):
             if kind == 'text':
@@ -103,12 +107,27 @@ class AnthropicStreamTranslator:
                     yield from self._open_block("text")
                 yield from self._delta_text(payload)
             elif kind == 'tool_open':
-                yield from self._open_block("tool_use", tool_name=payload['name'], tool_id=payload['id'])
+                # модель может выдумать имя ("PowerShell" вместо "Bash") —
+                # маппим на ближайший тул клиента
+                name = payload['name']
+                mapped = remap_tool_name(name, self.client_tool_names) if self.client_tool_names else None
+                if mapped:
+                    name = mapped[0]
+                    self._zo_text_tool_rename = mapped[1] or {}
+                else:
+                    self._zo_text_tool_rename = {}
+                yield from self._open_block("tool_use", tool_name=name, tool_id=payload['id'])
                 self._tool_block_open = True
             elif kind == 'tool_args':
-                yield from self._delta_tool_input(payload)
+                if self._zo_text_tool_rename:
+                    self._zo_tool_arg_buf.append(payload)
+                else:
+                    yield from self._delta_tool_input(payload)
             elif kind == 'tool_close':
-                pass
+                if self._zo_text_tool_rename:
+                    self._zo_tool_arg_buf.append(payload)
+                else:
+                    pass
 
     def _flush_parser(self) -> Iterator[str]:
         for kind, payload in self.tool_parser.finalize():
@@ -117,12 +136,27 @@ class AnthropicStreamTranslator:
                     yield from self._open_block("text")
                 yield from self._delta_text(payload)
             elif kind == 'tool_open':
-                yield from self._open_block("tool_use", tool_name=payload['name'], tool_id=payload['id'])
+                # модель может выдумать имя ("PowerShell" вместо "Bash") —
+                # маппим на ближайший тул клиента
+                name = payload['name']
+                mapped = remap_tool_name(name, self.client_tool_names) if self.client_tool_names else None
+                if mapped:
+                    name = mapped[0]
+                    self._zo_text_tool_rename = mapped[1] or {}
+                else:
+                    self._zo_text_tool_rename = {}
+                yield from self._open_block("tool_use", tool_name=name, tool_id=payload['id'])
                 self._tool_block_open = True
             elif kind == 'tool_args':
-                yield from self._delta_tool_input(payload)
+                if self._zo_text_tool_rename:
+                    self._zo_tool_arg_buf.append(payload)
+                else:
+                    yield from self._delta_tool_input(payload)
             elif kind == 'tool_close':
-                pass
+                if self._zo_text_tool_rename:
+                    self._zo_tool_arg_buf.append(payload)
+                else:
+                    pass
 
     def _handle_streamed_thinking(self, text: str) -> Iterator[str]:
         """Emit a thinking_delta event, opening a thinking block lazily."""

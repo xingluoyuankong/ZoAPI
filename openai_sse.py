@@ -55,6 +55,8 @@ class ChatCompletionsTranslator:
     ) -> None:
         self.model = model
         self.client_tool_names: set[str] = set(client_tool_names or [])
+        self._zo_text_tool_rename: dict[str, str] = {}
+        self._zo_text_tool_arg_buf: list[str] = []
         self._id = "chatcmpl-" + uuid.uuid4().hex[:24]
         self._created = int(time.time())
         self._started = False
@@ -178,11 +180,34 @@ class ChatCompletionsTranslator:
                 self._cur_tool_index += 1
                 self._in_tool = True
                 self._emitted_tool = True
-                yield self._chunk_tool_open(self._cur_tool_index, payload["id"], payload["name"])
+                name = payload["name"]
+                mapped = remap_tool_name(name, self.client_tool_names) if self.client_tool_names else None
+                if mapped is not None:
+                    name = mapped[0]
+                    self._zo_text_tool_rename = mapped[1] or {}
+                else:
+                    self._zo_text_tool_rename = {}
+                self._zo_text_tool_arg_buf = []
+                yield self._chunk_tool_open(self._cur_tool_index, payload["id"], name)
             elif kind == "tool_args":
                 if payload:
-                    yield self._chunk_tool_args(self._cur_tool_index, payload)
+                    if self._zo_text_tool_rename:
+                        self._zo_text_tool_arg_buf.append(payload)
+                    else:
+                        yield self._chunk_tool_args(self._cur_tool_index, payload)
             elif kind == "tool_close":
+                if self._zo_text_tool_rename:
+                    import json as _json
+                    raw = ''.join(self._zo_text_tool_arg_buf)
+                    try:
+                        args = _json.loads(raw or '{}')
+                        from tool_bridge import remap_args
+                        args = remap_args('', args, self._zo_text_tool_rename)
+                        yield self._chunk_tool_args(self._cur_tool_index, _json.dumps(args, ensure_ascii=False))
+                    except Exception:
+                        yield self._chunk_tool_args(self._cur_tool_index, raw)
+                    self._zo_text_tool_arg_buf = []
+                    self._zo_text_tool_rename = {}
                 self._in_tool = False
 
     def feed(self, event_name: str, data: dict[str, Any]) -> Generator[str, None, None]:
@@ -372,6 +397,8 @@ class ResponsesApiTranslator:
     ) -> None:
         self.model = model
         self.client_tool_names: set[str] = set(client_tool_names or [])
+        self._zo_text_tool_rename: dict[str, str] = {}
+        self._zo_text_tool_arg_buf: list[str] = []
         self._resp_id = "resp-" + uuid.uuid4().hex[:24]
         self._text_item_id = "msg-" + uuid.uuid4().hex[:24]
         self._created = int(time.time())
@@ -594,15 +621,37 @@ class ResponsesApiTranslator:
                     "delta": payload,
                 })
             elif kind == "tool_open":
-                # закрыть текущий text item (если был), затем открыть tool
                 if self._text_item_opened and not self._text_item_done:
                     out.extend(self._close_text_item())
                 if self._cur_tool_item_id is not None:
                     out.extend(self._close_tool_item())
-                out.extend(self._open_tool_item(payload["id"], payload["name"]))
+                name = payload["name"]
+                mapped = remap_tool_name(name, self.client_tool_names) if self.client_tool_names else None
+                if mapped is not None:
+                    name = mapped[0]
+                    self._zo_text_tool_rename = mapped[1] or {}
+                else:
+                    self._zo_text_tool_rename = {}
+                self._zo_text_tool_arg_buf = []
+                out.extend(self._open_tool_item(payload["id"], name))
             elif kind == "tool_args":
-                out.extend(self._tool_args_delta(payload))
+                if self._zo_text_tool_rename:
+                    self._zo_text_tool_arg_buf.append(payload)
+                else:
+                    out.extend(self._tool_args_delta(payload))
             elif kind == "tool_close":
+                if self._zo_text_tool_rename:
+                    import json as _json
+                    raw = ''.join(self._zo_text_tool_arg_buf)
+                    try:
+                        args = _json.loads(raw or '{}')
+                        from tool_bridge import remap_args
+                        args = remap_args('', args, self._zo_text_tool_rename)
+                        out.extend(self._tool_args_delta(_json.dumps(args, ensure_ascii=False)))
+                    except Exception:
+                        out.extend(self._tool_args_delta(raw))
+                    self._zo_text_tool_arg_buf = []
+                    self._zo_text_tool_rename = {}
                 out.extend(self._close_tool_item())
         return out
 
