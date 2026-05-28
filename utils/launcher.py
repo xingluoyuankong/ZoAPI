@@ -71,6 +71,14 @@ LANGS = {
         "toggle": "Включить / отключить аккаунт",
         "delete": "Удалить аккаунт",
         "refresh_health": "Проверить логин / баланс / модели",
+        "restart_api": "Перезапустить локальный API",
+        "show_log": "Показать лог локального API",
+        "log_empty": "Лог пуст. Возможно, API ещё не пытался запуститься.",
+        "log_title": "Лог локального API (последние строки)",
+        "press_enter_back": "Нажми Enter, чтобы вернуться",
+        "api_started": "API запущен.",
+        "api_failed": "API не поднялся. Покажу лог.",
+
         "back": "Назад",
         "no_accounts": "нет аккаунтов",
         "install_chromium": "Ставлю временный Chromium для авторизации...",
@@ -144,6 +152,14 @@ LANGS = {
         "toggle": "Enable / disable account",
         "delete": "Delete account",
         "refresh_health": "Check login / balance / models",
+        "restart_api": "Restart local API",
+        "show_log": "Show local API log",
+        "log_empty": "Log is empty. Maybe the API has not tried to start yet.",
+        "log_title": "Local API log (tail)",
+        "press_enter_back": "Press Enter to go back",
+        "api_started": "API is running.",
+        "api_failed": "API failed to start. Showing log.",
+
         "back": "Back",
         "no_accounts": "no accounts",
         "install_chromium": "Installing temporary Chromium for auth...",
@@ -582,11 +598,24 @@ def add_account_via_browser(state: dict, store: AccountStore) -> None:
             start = time.time()
             while time.time() - start < 900:
                 try:
-                    cookies = context.cookies(cookie_urls)
+                    cookies = list(context.cookies(cookie_urls)) + list(context.cookies())
                 except Exception:
-                    cookies = context.cookies()
-                access = next((c.get("value", "") for c in cookies if c.get("name") == "access_token"), "")
-                refresh = next((c.get("value", "") for c in cookies if c.get("name") == "refresh_token"), "")
+                    try:
+                        cookies = context.cookies()
+                    except Exception:
+                        cookies = []
+                def _from(cname: str) -> str:
+                    for c in cookies:
+                        if c.get("name") != cname:
+                            continue
+                        dom = (c.get("domain") or "").lstrip(".")
+                        if dom == "zo.computer" or dom.endswith(".zo.computer"):
+                            v = c.get("value", "")
+                            if v:
+                                return v
+                    return ""
+                access = _from("access_token")
+                refresh = _from("refresh_token")
                 if access and refresh:
                     captured = (access, refresh, clean_domain(extract_domain_from_access_token(access) or ""))
                     break
@@ -719,13 +748,63 @@ def switch_language(state: dict) -> None:
         save_state(state)
 
 
+
+def stop_proxy() -> None:
+    try:
+        if PID_FILE.exists():
+            pid = int(PID_FILE.read_text(encoding="utf-8").strip() or "0")
+            if pid > 0:
+                if os.name == "nt":
+                    subprocess.run(["taskkill", "/PID", str(pid), "/F"], capture_output=True)
+                else:
+                    try:
+                        os.kill(pid, 15)
+                    except Exception:
+                        pass
+    except Exception:
+        pass
+    try:
+        PID_FILE.unlink()
+    except Exception:
+        pass
+
+
+def restart_proxy(state: dict) -> None:
+    stop_proxy()
+    time.sleep(0.5)
+    ok = start_proxy()
+    if ok:
+        console.print(f"[#a8e6a3]{glyphs()['ok']} {tr(state, 'api_started')}[/#a8e6a3]")
+    else:
+        console.print(f"[#f4b7b7]{glyphs()['err']} {tr(state, 'api_failed')}[/#f4b7b7]")
+        show_proxy_log(state)
+
+
+def show_proxy_log(state: dict) -> None:
+    try:
+        data = LOG_FILE.read_text(encoding="utf-8", errors="replace") if LOG_FILE.exists() else ""
+    except Exception as e:
+        data = f"(failed to read log: {e})"
+    tail = "\n".join(data.splitlines()[-60:]) if data else ""
+    if not tail.strip():
+        console.print(Panel(tr(state, "log_empty"), title=tr(state, "log_title"), border_style="#b8a7d9"))
+    else:
+        console.print(Panel(tail, title=tr(state, "log_title"), border_style="#b8a7d9"))
+    try:
+        input(tr(state, "press_enter_back"))
+    except Exception:
+        pass
+
+
 def main() -> int:
     state = load_state()
     store = AccountStore()
     console.clear()
     console.print(header_panel(state, False))
     console.print(f"[#b8a7d9]{glyphs()['run']} {tr(state, 'proxy_start')}[/#b8a7d9]")
-    start_proxy()
+    if not start_proxy():
+        console.print(f"[#f4b7b7]{glyphs()['err']} {tr(state, 'api_failed')}[/#f4b7b7]")
+        show_proxy_log(state)
     if store.accounts:
         try:
             asyncio.run(refresh_store_health(store))
@@ -739,6 +818,8 @@ def main() -> int:
             [
                 Choice(tr(state, "refresh"), "refresh"),
                 Choice(tr(state, "accounts_menu"), "accounts"),
+                Choice(tr(state, "restart_api"), "restart_api"),
+                Choice(tr(state, "show_log"), "show_log"),
                 Choice(tr(state, "setup_examples"), "setup"),
                 Choice(tr(state, "language"), "lang"),
                 Choice(tr(state, "docs"), "docs"),
@@ -764,6 +845,10 @@ def main() -> int:
             switch_language(state)
         elif choice == "docs":
             open_docs(state)
+        elif choice == "restart_api":
+            restart_proxy(state)
+        elif choice == "show_log":
+            show_proxy_log(state)
 
 
 if __name__ == "__main__":
