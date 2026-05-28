@@ -1,18 +1,31 @@
 # zo-claude-proxy
 
-Локальный прокси: превращает [Zo Computer](https://zo.computer) в совместимый бэкенд для **Claude Code**, **Codex** (CLI + desktop), **OpenCode** и **Hermes**.
+Локальный прокси: поднимает **локальный API-хаб** поверх Zo Computer и делает его совместимым с клиентами формата **Anthropic** и **OpenAI**.
 
-- Красивый TUI-лончер в терминале: панели, таблицы, цвета, стрелки ↑↓, Enter.
-- Авторизация аккаунта теперь идёт через **временный Playwright Chromium** с отдельным чистым профилем.
-- Claude Code ходит в Anthropic-совместимый `POST /v1/messages`.
-- Codex / OpenCode / Hermes ходят в OpenAI-совместимые `POST /v1/chat/completions`, `POST /v1/responses` и `WS /v1/responses`.
-- Всё это уходит в твой Zo через **внутренний cookie-based `POST /ask`** (тот же эндпоинт, что использует веб-чат Zo), не через `zo_sk_…` API ключ.
-- Кредиты тратятся на Zo. Отдельная подписка Anthropic / OpenAI не нужна.
-- **Multi-account**: можно держать несколько Zo-аккаунтов, прокси ротирует при ошибках.
+Теперь логика такая:
+- `run.bat` / `run.sh` **сразу поднимает локальный API** на `127.0.0.1:17878`
+- дальше открывается красивый terminal UI для аккаунтов, статуса и подсказок по настройке
+- **Claude Code / Codex / OpenCode / Hermes сам лончер больше не запускает**
+- ты сам указываешь в нужном приложении локальный Base URL и API key
 
 ---
 
-## Установка
+## Что есть
+
+### Anthropic-совместимое
+- `POST /v1/messages`
+- `GET /v1/models`
+- `GET /health`
+
+### OpenAI-совместимое
+- `POST /v1/chat/completions`
+- `POST /v1/responses`
+- `WS   /v1/responses`
+- `GET  /v1/models`
+
+---
+
+## Запуск
 
 Нужен Python 3.10+.
 
@@ -32,112 +45,108 @@ run.bat
 ```
 
 Скрипт сам:
-- найдёт Python 3.10+ (`py -3` / `python` / `python3`)
+- найдёт Python 3.10+
 - создаст `.venv`, если её ещё нет
-- каждый запуск быстро проверит нужные пакеты
-- если чего-то не хватает — тихо доставит из `requirements.txt`
-- откроет TUI-меню
+- на каждом запуске быстро проверит зависимости
+- если чего-то не хватает — доставит
+- поднимет локальный прокси на `http://127.0.0.1:17878`
+- откроет TUI с аккаунтами, статусом и настройками
+
+Пока это окно открыто — локальный API работает.
 
 ---
 
-## Использование
+## Добавление аккаунта
 
-Один лончер — никаких отдельных `use-*` батников.
+Внутри UI:
+- `Accounts`
+- `Add account via temporary browser`
 
-```
-zo-claude-proxy — что запускаем?
- · ▶ Claude Code
-   ▶ Codex
-   ▶ OpenCode
-   ▶ Hermes
-   ─────────────────────
-   ⚙ Аккаунты (1 шт, режим=fixed, активный=main)
-   ✕ Выход
-```
+Что происходит:
+1. При необходимости ставится Playwright Chromium
+2. Открывается **временный отдельный Chromium**
+3. Ты логинишься в Zo
+4. Как только появляются `access_token` + `refresh_token`, окно автоматически закрывается
+5. Лончер сразу проверяет логин, баланс и модели
+6. Аккаунт сохраняется локально в `accounts.json`
 
-- стрелки ↑↓ — выбор
-- `Enter` — подтвердить
-- последний клиент запоминается (`launcher_state.json`) и подсвечивается дефолтом
+Важно:
+- **не читаются куки из твоего обычного браузера**
+- для каждого добавления используется свежий временный браузер
+- так можно спокойно добавлять разные аккаунты
 
-Что лончер делает за тебя:
-- **Claude Code** → `ANTHROPIC_BASE_URL=http://127.0.0.1:17878`, `ANTHROPIC_AUTH_TOKEN=zo-proxy`, локально чистит `ANTHROPIC_API_KEY`
-- **Codex CLI** → пишет локальный `CODEX_HOME/config.toml` с `openai_base_url = "http://127.0.0.1:17878/v1"`
-- **OpenCode** → передаёт `OPENCODE_CONFIG_CONTENT` с custom OpenAI-compatible провайдером
-- **Hermes** → `OPENAI_BASE_URL` + `OPENAI_API_KEY`
+Есть и fallback: `manual cookie fallback`, если вдруг авторизация через встроенный браузер не сработала.
 
-### Codex desktop
+---
 
-Codex как приложение тоже работает — он говорит на тех же `/v1/responses` (HTTP + WebSocket). Один раз в настройках Codex desktop:
+## Настройка клиентов вручную
+
+## OpenAI-совместимые приложения
+Подходит для Codex desktop, OpenCode и любого другого OpenAI-compatible клиента.
 
 - Base URL: `http://127.0.0.1:17878/v1`
-- API key: `zo-proxy` (любая непустая строка)
-- Model: `gpt-5.3-codex` (или другая, см. `config.py → MODEL_MAP`)
+- API key: `zo-proxy`
+- Model examples:
+  - `gpt-5.3-codex`
+  - `gpt-5.5`
+  - `claude-sonnet-4-6`
+  - `claude-opus-4-7`
 
-Запусти проксю через `run.bat` / `./run.sh` (выбери любого клиента, либо пункт `Аккаунты` — главное, чтобы прокся была поднята) и держи окно открытым.
+## Anthropic-совместимые приложения
+Подходит для Claude Code и клиентов, которые ждут Anthropic Messages API.
+
+- Base URL: `http://127.0.0.1:17878`
+- Auth token / API key: `zo-proxy`
+- Endpoint: `/v1/messages`
 
 ---
 
-## Аккаунты
+## Multi-account
 
-В главном меню `Accounts`:
-
-- `Add account via temporary browser`
-- `Switch mode: fixed / rotation`
-- `Set active account`
-- `Enable / disable account`
-- `Delete account`
-- `Ping and check balances`
-
-Флоу добавления аккаунта:
-1. Лончер при необходимости ставит Playwright Chromium
-2. Открывает **отдельный временный Chromium**
-3. Ты логинишься в Zo
-4. Как только появляются `access_token` + `refresh_token`, окно закрывается автоматически
-5. Лончер сразу проверяет аккаунт, подтягивает баланс/модели и сохраняет его
-
-Твой обычный Chrome/Edge/Firefox не трогаются.
+В UI можно:
+- добавить аккаунт
+- выбрать активный аккаунт
+- включать / выключать аккаунты
+- удалять аккаунты
+- обновлять проверку логина / баланса / моделей
+- переключать режим `fixed / rotation`
 
 ### Режимы
+- `fixed` — всегда использовать активный аккаунт
+- `rotation` — usable-аккаунты идут по кругу
 
-- `fixed` — используется выбранный активный аккаунт
-- `rotation` — usable аккаунты идут по кругу при ошибках
+### API для управления
+Список аккаунтов:
+```bash
+curl http://127.0.0.1:17878/v1/admin/accounts
+```
 
-Сменить активный аккаунт без рестарта прокси:
-
+Сменить активный:
 ```bash
 curl -X POST http://127.0.0.1:17878/v1/admin/active \
   -H 'Content-Type: application/json' \
   -d '{"label":"acc2"}'
 ```
 
-Статус всех:
-
-```bash
-curl http://127.0.0.1:17878/v1/admin/accounts | jq
-```
-
 ---
 
-## Эндпоинты
+## Интерфейс
 
-### Anthropic-совместимое
-- `POST /v1/messages`
-- `GET  /v1/models`
-- `GET  /health`
-
-### OpenAI-совместимое
-- `POST /v1/chat/completions`
-- `POST /v1/responses`
-- `WS   /v1/responses` (Codex `responses_websocket` транспорт)
-- `GET  /v1/models`
+Сейчас UI умеет:
+- более плотный layout
+- верхний статус-бар
+- нижний статус-бар
+- таблицу аккаунтов
+- живое обновление логина / баланса / моделей по команде `Refresh`
+- цвета и ASCII-safe иконки, чтобы не ломалось на Windows
 
 ---
 
 ## Файлы
 
-```
+```text
 run.bat / run.sh      # единая точка входа
-utils/launcher.py     # TUI-лончер (questionary)
+utils/launcher.py     # красивый terminal UI
 proxy.py              # FastAPI сервер
 accounts.py           # multi-account store + ротация
 zo_client.py          # клиент к Zo /ask
@@ -149,19 +158,21 @@ requirements.txt      # зависимости
 
 ---
 
-## Известные ограничения
+## Ограничения
 
-- **Auto-refresh JWT** пока нет — когда cookie-сессия протухнет (~30 дней), пере-добавь аккаунт.
-- Вложения картинок/файлов пока режутся до текстового суррогата.
-- Tool-call мост пока не идеален, особенно вне Claude Code.
+- auto-refresh JWT пока нет
+- когда cookie-сессия протухнет, аккаунт надо пере-добавить
+- вложения картинок/файлов пока режутся до текстового суррогата
+- tool-call мост пока не идеален
 
 ---
 
 ## Безопасность
 
-- `accounts.json`, `.codex-home/` и временный browser profile не коммитятся.
-- Токены живут только локально.
-- Если cookie утёк — разлогинься и залогинься заново в Zo.
+- `accounts.json` хранится локально
+- временный браузерный профиль удаляется сразу после захвата куков
+- обычный браузер не трогается
+- если сессия утекла — просто перелогинься в Zo
 
 ---
 

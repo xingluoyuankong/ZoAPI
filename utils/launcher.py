@@ -4,12 +4,12 @@ import asyncio
 import datetime as dt
 import json
 import os
-import shutil
 import socket
 import subprocess
 import sys
 import tempfile
 import time
+import webbrowser
 from pathlib import Path
 from typing import Any
 
@@ -22,7 +22,7 @@ from playwright.sync_api import TimeoutError as PlaywrightTimeoutError
 from playwright.sync_api import sync_playwright
 from questionary import Choice, Separator
 from rich.align import Align
-from rich.console import Console
+from rich.console import Console, Group
 from rich.panel import Panel
 from rich.table import Table
 from rich.text import Text
@@ -33,51 +33,72 @@ from zo_client import ZoClient
 STATE_FILE = ROOT / "launcher_state.json"
 PROXY_PORT = 17878
 PROXY_URL = f"http://127.0.0.1:{PROXY_PORT}"
+API_BASE_URL = f"{PROXY_URL}/v1"
 LOG_FILE = ROOT / "proxy.log"
-CLIENTS = [
-    ("claude", "Claude Code", "claude"),
-    ("codex", "Codex", "codex"),
-    ("opencode", "OpenCode", "opencode"),
-    ("hermes", "Hermes", "hermes"),
-]
 STYLE = questionary.Style(
     [
         ("qmark", "fg:#60a5fa bold"),
         ("question", "bold fg:#e5e7eb"),
         ("answer", "fg:#34d399 bold"),
         ("pointer", "fg:#60a5fa bold"),
-        ("highlighted", "fg:#ffffff bg:#1f2937 bold"),
+        ("highlighted", "fg:#f8fafc bg:#1e293b bold"),
         ("selected", "fg:#34d399 bold"),
-        ("instruction", "fg:#6b7280"),
-        ("separator", "fg:#4b5563"),
-        ("disabled", "fg:#6b7280 italic"),
+        ("instruction", "fg:#94a3b8"),
+        ("separator", "fg:#475569"),
+        ("disabled", "fg:#64748b italic"),
     ]
 )
 console = Console(highlight=False)
+ICONS = {
+    "app": "[=]",
+    "ok": "[+]",
+    "warn": "[!]",
+    "err": "[x]",
+    "mode": "[~]",
+    "acct": "[#]",
+    "api": "[@]",
+    "run": "[>]",
+}
 
 
 def load_state() -> dict:
     if not STATE_FILE.exists():
-        return {"last_client": "claude"}
+        return {"last_action": "refresh"}
     try:
         return json.loads(STATE_FILE.read_text(encoding="utf-8"))
     except Exception:
-        return {"last_client": "claude"}
+        return {"last_action": "refresh"}
 
 
 def save_state(state: dict) -> None:
     STATE_FILE.write_text(json.dumps(state, ensure_ascii=False, indent=2), encoding="utf-8")
 
 
-def hr() -> None:
-    console.print("[dim]─[/dim]" * 30)
+def app_header(status: str) -> None:
+    title = Text()
+    title.append("zo-claude-proxy", style="bold cyan")
+    title.append("  local api hub", style="bold white")
+    title.append(f"  {status}", style="dim")
+    console.print(Panel(title, border_style="blue", padding=(0, 1)))
 
 
-def app_header(subtitle: str = "") -> None:
-    title = Text("zo-claude-proxy", style="bold cyan")
-    if subtitle:
-        title.append(f"  {subtitle}", style="dim")
-    console.print(Panel(Align.left(title), border_style="blue", padding=(0, 1)))
+def status_bar(store: AccountStore, proxy_ok: bool) -> Panel:
+    usable = len(store.list_usable())
+    total = len(store.accounts)
+    mode = getattr(store, "mode", "fixed")
+    active = store.active_label or "-"
+    bits = Text()
+    bits.append(f"{ICONS['api']} proxy ", style="bold")
+    bits.append("online" if proxy_ok else "offline", style="green" if proxy_ok else "red")
+    bits.append("   ")
+    bits.append(f"{ICONS['acct']} accounts ", style="bold")
+    bits.append(f"{usable}/{total}", style="cyan")
+    bits.append("   ")
+    bits.append(f"{ICONS['mode']} mode ", style="bold")
+    bits.append(mode, style="magenta")
+    bits.append("   active ", style="bold")
+    bits.append(active, style="yellow")
+    return Panel(bits, border_style="blue", padding=(0, 1))
 
 
 def proxy_running() -> bool:
@@ -98,7 +119,7 @@ def start_proxy() -> bool:
     else:
         with LOG_FILE.open("ab") as f:
             subprocess.Popen(cmd, cwd=ROOT, stdout=f, stderr=f, start_new_session=True)
-    for _ in range(50):
+    for _ in range(60):
         time.sleep(0.2)
         if proxy_running():
             return True
@@ -109,18 +130,18 @@ def ensure_playwright_chromium() -> bool:
     probe = [sys.executable, "-m", "playwright", "install", "--dry-run", "chromium"]
     try:
         r = subprocess.run(probe, cwd=ROOT, capture_output=True, text=True, timeout=60)
-        text = (r.stdout or "") + (r.stderr or "")
-        needs_install = (r.returncode != 0) or ("will download" in text.lower()) or ("not installed" in text.lower())
+        text = ((r.stdout or "") + (r.stderr or "")).lower()
+        needs = (r.returncode != 0) or ("will download" in text) or ("not installed" in text)
     except Exception:
-        needs_install = True
-    if not needs_install:
+        needs = True
+    if not needs:
         return True
-    console.print("[cyan][+] Ставлю Chromium для встроенной авторизации ...[/cyan]")
+    console.print(f"[cyan]{ICONS['run']} installing bundled Chromium for auth...[/cyan]")
     r = subprocess.run([sys.executable, "-m", "playwright", "install", "chromium"], cwd=ROOT)
     return r.returncode == 0
 
 
-def _fmt_ttl(seconds: int | None) -> str:
+def fmt_ttl(seconds: int | None) -> str:
     if seconds is None:
         return "?"
     if seconds < 0:
@@ -132,7 +153,7 @@ def _fmt_ttl(seconds: int | None) -> str:
     return f"{seconds // 86400}d"
 
 
-async def _fetch_account_health(account: Account) -> tuple[int | None, int | None]:
+async def fetch_account_health(account: Account) -> tuple[int | None, int | None]:
     client = ZoClient()
     try:
         models = await client.list_models(account)
@@ -142,37 +163,78 @@ async def _fetch_account_health(account: Account) -> tuple[int | None, int | Non
         await client.close()
 
 
-def render_accounts(store: AccountStore) -> None:
-    mode = getattr(store, "mode", "fixed")
-    subtitle = f"accounts  mode={mode}"
-    app_header(subtitle)
-    if not store.accounts:
-        console.print(Panel("[dim]No accounts yet. Add one from the menu below.[/dim]", border_style="yellow"))
-        return
-    table = Table(show_header=True, header_style="bold white", border_style="blue")
-    table.add_column("active", style="cyan", width=6)
-    table.add_column("label", style="green")
-    table.add_column("email", style="white")
-    table.add_column("domain", style="magenta")
+async def refresh_store_health(store: AccountStore) -> None:
+    client = ZoClient()
+    try:
+        for acc in store.accounts:
+            try:
+                models = await client.list_models(acc)
+                balance = await client.fetch_balance(acc)
+                acc.balance_cents = balance
+                acc.balance_checked_at = time.time()
+                acc.last_err = None
+                acc.error_streak = 0
+                store.mark_ok(acc.label)
+            except Exception as e:
+                store.mark_err(acc.label, str(e), max_streak=999)
+    finally:
+        await client.close()
+        store.save()
+
+
+def accounts_table(store: AccountStore) -> Table:
+    table = Table(show_header=True, header_style="bold white", border_style="blue", expand=True)
+    table.add_column("act", width=3, justify="center")
+    table.add_column("label", style="green", min_width=8)
+    table.add_column("email", style="white", min_width=18)
+    table.add_column("domain", style="magenta", min_width=10)
     table.add_column("ttl", style="yellow", width=8)
+    table.add_column("balance", style="cyan", width=10, justify="right")
     table.add_column("state", style="white", width=10)
     for acc in store.accounts:
         marker = "*" if acc.label == store.active_label else ""
         state = "off" if acc.disabled else ("err" if acc.error_streak else "ok")
-        table.add_row(marker, acc.label, acc.email() or "?", acc.domain, _fmt_ttl(acc.seconds_until_expiry()), state)
-    console.print(table)
+        bal = "?" if acc.balance_cents is None else f"{acc.balance_cents}¢"
+        table.add_row(marker, acc.label, acc.email() or "?", acc.domain, fmt_ttl(acc.seconds_until_expiry()), bal, state)
+    if not store.accounts:
+        table.add_row("", "—", "no accounts yet", "—", "—", "—", "—")
+    return table
 
 
-def client_status(bin_name: str) -> str:
-    return "ready" if shutil.which(bin_name) else "missing"
+def api_panel() -> Panel:
+    lines = Table.grid(padding=(0, 2))
+    lines.add_column(style="cyan", width=22)
+    lines.add_column(style="white")
+    lines.add_row("Anthropic", "POST /v1/messages")
+    lines.add_row("OpenAI", "POST /v1/chat/completions")
+    lines.add_row("OpenAI", "POST /v1/responses")
+    lines.add_row("OpenAI", "WS   /v1/responses")
+    lines.add_row("Common", "GET  /v1/models   GET /health")
+    lines.add_row("Base URL", API_BASE_URL)
+    return Panel(lines, title="API", border_style="blue")
 
 
-def summary_line(store: AccountStore) -> str:
-    usable = len(store.list_usable())
-    total = len(store.accounts)
-    mode = getattr(store, "mode", "fixed")
-    active = store.active_label or "-"
-    return f"accounts {usable}/{total} usable   mode {mode}   active {active}   proxy {PROXY_URL}"
+def setup_panel() -> Panel:
+    body = Table.grid(expand=True)
+    body.add_column(style="white")
+    body.add_row("Use these settings in your app:")
+    body.add_row("")
+    body.add_row(f"Base URL: {API_BASE_URL}")
+    body.add_row("API key:  zo-proxy")
+    body.add_row("Examples: gpt-5.3-codex, gpt-5.5, claude-sonnet-4-6, claude-opus-4-7")
+    return Panel(body, title="Manual client setup", border_style="blue")
+
+
+def dashboard(store: AccountStore, proxy_ok: bool) -> None:
+    console.clear()
+    app_header("running automatically" if proxy_ok else "starting proxy")
+    console.print(status_bar(store, proxy_ok))
+    console.print(accounts_table(store))
+    console.print(Panel(Group(api_panel(), setup_panel()), border_style="blue", title="Routes + config"))
+    footer = Text()
+    footer.append("↑↓ move  Enter select", style="dim")
+    footer.append("   local API stays up while this window is open", style="dim")
+    console.print(Panel(footer, border_style="blue", padding=(0, 1)))
 
 
 def select_menu(message: str, choices: list[Any], default: str | None = None):
@@ -182,7 +244,7 @@ def select_menu(message: str, choices: list[Any], default: str | None = None):
         default=default,
         style=STYLE,
         qmark=">",
-        pointer="❯",
+        pointer=">",
         instruction="↑↓ move • Enter select",
     ).ask()
 
@@ -196,43 +258,58 @@ def prompt_confirm(message: str, default: bool = True) -> bool:
     return bool(value)
 
 
+def pause() -> None:
+    console.print("[dim]Press Enter to continue...[/dim]")
+    input()
+
+
 def add_account_manual(store: AccountStore) -> None:
+    console.clear()
     app_header("manual cookie fallback")
-    console.print("[dim]Paste full Cookie header from a Zo /ask request.[/dim]")
+    console.print(Panel("Paste full Cookie header from a Zo /ask request.", border_style="yellow"))
     raw = prompt_text("Cookie header:", "") or ""
     access, refresh = extract_tokens_from_cookie(raw)
     if not access:
-        console.print("[red][!] access_token not found.[/red]")
+        console.print(f"[red]{ICONS['err']} access_token not found.[/red]")
+        pause()
         return
     domain = prompt_text("Workspace domain:", extract_domain_from_access_token(access) or "") or ""
     if not domain:
         return
     label = prompt_text("Label:", f"acc{len(store.accounts)+1}") or f"acc{len(store.accounts)+1}"
     acc = Account(label=label, domain=domain.strip(), access_token=access, refresh_token=refresh, added_at=dt.datetime.now(dt.timezone.utc).isoformat())
-    balance, models = asyncio.run(_fetch_account_health(acc))
+    try:
+        balance, models = asyncio.run(fetch_account_health(acc))
+    except Exception as e:
+        console.print(f"[red]{ICONS['err']} verification failed: {e}[/red]")
+        pause()
+        return
     store.add(acc, make_active=not store.accounts or prompt_confirm("Make active?", True))
-    console.print(f"[green][+] Added {label}[/green]  [dim]balance={balance if balance is not None else '?'}¢  models={models or '?'}[/dim]")
+    console.print(Panel(f"Saved {label}\nbalance: {balance if balance is not None else '?'}¢\nmodels: {models}", border_style="green"))
+    pause()
 
 
 def add_account_via_browser(store: AccountStore) -> None:
-    app_header("browser sign-in")
+    console.clear()
+    app_header("temporary browser auth")
     console.print(Panel(
-        "A fresh temporary Chromium will open.\n\n"
+        "A fresh temporary Playwright Chromium will open.\n\n"
         "Log into Zo there. As soon as access_token + refresh_token appear,\n"
-        "the browser closes automatically, the account is verified, and balance/models are checked.\n\n"
-        "This browser profile is temporary and is deleted right after capture.",
+        "the browser closes automatically, then the account is verified,\n"
+        "balance/models are fetched, and the account is saved.\n\n"
+        "Nothing is read from your normal Chrome/Edge/Firefox profile.",
         border_style="cyan",
     ))
     if not ensure_playwright_chromium():
-        console.print("[red][!] Could not install Chromium for Playwright.[/red]")
+        console.print(f"[red]{ICONS['err']} could not install Playwright Chromium.[/red]")
+        pause()
         return
     captured: tuple[str, str, str] | None = None
     with tempfile.TemporaryDirectory(prefix="zo-proxy-browser-") as tmp:
-        user_data_dir = Path(tmp) / "profile"
         try:
             with sync_playwright() as p:
                 browser = p.chromium.launch_persistent_context(
-                    user_data_dir=str(user_data_dir),
+                    user_data_dir=tmp,
                     headless=False,
                     viewport={"width": 1360, "height": 900},
                 )
@@ -244,74 +321,52 @@ def add_account_via_browser(store: AccountStore) -> None:
                     access = next((c.get("value", "") for c in cookies if c.get("name") == "access_token"), "")
                     refresh = next((c.get("value", "") for c in cookies if c.get("name") == "refresh_token"), "")
                     if access and refresh:
-                        domain = extract_domain_from_access_token(access) or ""
-                        captured = (access, refresh, domain)
+                        captured = (access, refresh, extract_domain_from_access_token(access) or "")
                         break
-                    page.wait_for_timeout(1200)
+                    page.wait_for_timeout(1000)
                 browser.close()
         except PlaywrightTimeoutError:
             pass
         except Exception as e:
-            console.print(f"[red][!] Browser auth failed: {e}[/red]")
+            console.print(f"[red]{ICONS['err']} browser auth failed: {e}[/red]")
+            pause()
             return
     if not captured:
-        console.print("[yellow][!] Cookies were not captured in time.[/yellow]")
+        console.print(f"[yellow]{ICONS['warn']} cookies were not captured in time.[/yellow]")
         if prompt_confirm("Use manual cookie fallback?", False):
             add_account_manual(store)
         return
     access, refresh, domain_guess = captured
-    suggested_label = f"acc{len(store.accounts)+1}"
-    label = prompt_text("Label:", suggested_label) or suggested_label
+    label = prompt_text("Label:", f"acc{len(store.accounts)+1}") or f"acc{len(store.accounts)+1}"
     domain = prompt_text("Workspace domain:", domain_guess) or domain_guess
     if not domain:
-        console.print("[red][!] Workspace domain is required.[/red]")
-        return
-    if any(a.label == label for a in store.accounts) and not prompt_confirm(f"Overwrite existing label '{label}'?", False):
+        console.print(f"[red]{ICONS['err']} workspace domain is required.[/red]")
+        pause()
         return
     acc = Account(label=label, domain=domain.strip(), access_token=access, refresh_token=refresh, added_at=dt.datetime.now(dt.timezone.utc).isoformat())
-    console.print("[cyan][+] Verifying account ...[/cyan]")
+    console.print(f"[cyan]{ICONS['run']} verifying login, balance, and models ...[/cyan]")
     try:
-        balance, models = asyncio.run(_fetch_account_health(acc))
+        balance, models = asyncio.run(fetch_account_health(acc))
     except Exception as e:
-        console.print(f"[red][!] Login cookies captured, but verification failed: {e}[/red]")
-        if prompt_confirm("Save account anyway?", False):
+        console.print(f"[red]{ICONS['err']} cookies captured, but verification failed: {e}[/red]")
+        if prompt_confirm("Save anyway?", False):
             store.add(acc, make_active=not store.accounts or prompt_confirm("Make active?", True))
+        pause()
         return
+    acc.balance_cents = balance
+    acc.balance_checked_at = time.time()
     store.add(acc, make_active=not store.accounts or prompt_confirm("Make active?", True))
-    balance_text = f"{balance}¢" if balance is not None else "?"
-    console.print(Panel(f"[green]Added {label}[/green]\nemail: {acc.email() or '?'}\ndomain: {acc.domain}\nbalance: {balance_text}\nmodels: {models}", border_style="green"))
-
-
-async def ping_all(store: AccountStore) -> None:
-    rows = []
-    client = ZoClient()
-    try:
-        for acc in store.accounts:
-            try:
-                models = await client.list_models(acc)
-                bal = await client.fetch_balance(acc)
-                store.mark_ok(acc.label)
-                rows.append((acc.label, acc.email() or "?", "ok", str(len(models)), str(bal) if bal is not None else "?"))
-            except Exception as e:
-                store.mark_err(acc.label, str(e), max_streak=999)
-                rows.append((acc.label, acc.email() or "?", type(e).__name__, "-", "-"))
-    finally:
-        await client.close()
-    table = Table(show_header=True, header_style="bold white", border_style="blue")
-    table.add_column("label", style="green")
-    table.add_column("email")
-    table.add_column("status")
-    table.add_column("models", justify="right")
-    table.add_column("balance¢", justify="right")
-    for row in rows:
-        table.add_row(*row)
-    console.print(table)
+    console.print(Panel(
+        f"{ICONS['ok']} added {label}\nemail: {acc.email() or '?'}\ndomain: {acc.domain}\nbalance: {balance if balance is not None else '?'}¢\nmodels: {models}",
+        border_style="green",
+    ))
+    pause()
 
 
 def pick_account_label(store: AccountStore, title: str) -> str | None:
     if not store.accounts:
         return None
-    choices = [Choice(f"{'*' if a.label==store.active_label else ' '}  {a.label}   {a.email() or '?'}   [{('off' if a.disabled else 'ok')} ]", a.label) for a in store.accounts]
+    choices = [Choice(f"{'*' if a.label == store.active_label else ' '}  {a.label:<10}  {a.email() or '?':<28}  {a.domain}", a.label) for a in store.accounts]
     choices += [Separator(), Choice("Back", None)]
     return select_menu(title, choices)
 
@@ -319,7 +374,7 @@ def pick_account_label(store: AccountStore, title: str) -> str | None:
 def accounts_menu(store: AccountStore) -> None:
     while True:
         console.clear()
-        render_accounts(store)
+        dashboard(store, proxy_running())
         mode = getattr(store, "mode", "fixed")
         next_mode = "rotation" if mode == "fixed" else "fixed"
         action = select_menu(
@@ -330,7 +385,7 @@ def accounts_menu(store: AccountStore) -> None:
                 Choice("Set active account", "active", disabled=None if store.accounts else "no accounts"),
                 Choice("Enable / disable account", "toggle", disabled=None if store.accounts else "no accounts"),
                 Choice("Delete account", "delete", disabled=None if store.accounts else "no accounts"),
-                Choice("Ping and check balances", "ping", disabled=None if store.accounts else "no accounts"),
+                Choice("Refresh login / balance / models", "refresh", disabled=None if store.accounts else "no accounts"),
                 Separator(),
                 Choice("Back", "back"),
             ],
@@ -357,102 +412,71 @@ def accounts_menu(store: AccountStore) -> None:
             label = pick_account_label(store, "Delete which account?")
             if label and prompt_confirm(f"Delete '{label}'?", False):
                 store.remove(label)
-        elif action == "ping":
-            asyncio.run(ping_all(store))
-        if action != "ping":
-            console.print("[dim]Press Enter to continue...[/dim]")
-            input()
+        elif action == "refresh":
+            console.print(f"[cyan]{ICONS['run']} refreshing login / balances / models ...[/cyan]")
+            asyncio.run(refresh_store_health(store))
+            pause()
 
 
-def env_for_client(client_id: str) -> dict[str, str]:
-    env = os.environ.copy()
-    if client_id == "claude":
-        env["ANTHROPIC_BASE_URL"] = PROXY_URL
-        env["ANTHROPIC_AUTH_TOKEN"] = "zo-proxy"
-        env["ANTHROPIC_API_KEY"] = ""
-        env["DISABLE_TELEMETRY"] = "1"
-        env["CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC"] = "1"
-    elif client_id == "codex":
-        codex_home = ROOT / ".codex-home"
-        codex_home.mkdir(exist_ok=True)
-        (codex_home / "config.toml").write_text(f'openai_base_url = "{PROXY_URL}/v1"\nmodel = "gpt-5.3-codex"\n', encoding="utf-8")
-        env["CODEX_HOME"] = str(codex_home)
-        env["OPENAI_BASE_URL"] = f"{PROXY_URL}/v1"
-        env["OPENAI_API_KEY"] = "zo-proxy"
-    elif client_id == "opencode":
-        env["OPENAI_BASE_URL"] = f"{PROXY_URL}/v1"
-        env["OPENAI_API_KEY"] = "zo-proxy"
-        env["OPENCODE_CONFIG_CONTENT"] = json.dumps({
-            "$schema": "https://opencode.ai/config.json",
-            "provider": {
-                "zo": {
-                    "npm": "@ai-sdk/openai-compatible",
-                    "name": "Zo Proxy",
-                    "options": {"baseURL": f"{PROXY_URL}/v1", "apiKey": "{env:OPENAI_API_KEY}"},
-                    "models": {
-                        "gpt-5.5": {"name": "GPT-5.5 via Zo"},
-                        "gpt-5.3-codex": {"name": "GPT-5.3 Codex via Zo"},
-                        "claude-sonnet-4-6": {"name": "Claude Sonnet 4.6 via Zo"},
-                        "claude-opus-4-7": {"name": "Claude Opus 4.7 via Zo"},
-                    },
-                }
-            },
-            "model": "zo/gpt-5.3-codex",
-        }, ensure_ascii=False)
-    elif client_id == "hermes":
-        env["OPENAI_BASE_URL"] = f"{PROXY_URL}/v1"
-        env["OPENAI_API_KEY"] = "zo-proxy"
-        env.setdefault("HERMES_MODEL", "gpt-5.5")
-    return env
-
-
-def main_menu(state: dict, store: AccountStore) -> str | None:
+def copy_setup_examples() -> None:
     console.clear()
-    app_header(summary_line(store))
-    grid = Table.grid(expand=True)
-    grid.add_column()
-    grid.add_column(justify="right", style="dim")
-    for cid, title, bin_name in CLIENTS:
-        grid.add_row(title, client_status(bin_name))
-    console.print(Panel(grid, title="Clients", border_style="blue"))
-    last = state.get("last_client", "claude")
-    choices: list[Any] = [Choice(title, cid) for cid, title, _ in CLIENTS]
-    choices += [Separator(), Choice("Accounts", "accounts"), Choice("Exit", "exit")]
-    return select_menu("What do you want to launch?", choices, default=last)
+    app_header("manual setup examples")
+    console.print(Panel(
+        f"Base URL: {API_BASE_URL}\nAPI key:  zo-proxy\n\nOpenCode / Codex app / other OpenAI-compatible app:\n  use OpenAI-compatible mode\n  set Base URL to {API_BASE_URL}\n  set API key to zo-proxy\n\nClaude Code / Anthropic-compatible app:\n  Base URL: {PROXY_URL}\n  Auth token / API key: zo-proxy\n  endpoint: /v1/messages",
+        border_style="green",
+    ))
+    pause()
+
+
+def open_docs() -> None:
+    webbrowser.open("https://docs.zocomputer.com/api")
+    console.print(f"[green]{ICONS['ok']} opened Zo API docs in your browser.[/green]")
+    pause()
 
 
 def main() -> int:
     state = load_state()
     store = AccountStore()
+    console.clear()
+    app_header("booting")
+    console.print(f"[cyan]{ICONS['run']} starting local proxy on {PROXY_URL} ...[/cyan]")
+    if not start_proxy():
+        console.print(f"[red]{ICONS['err']} failed to start local proxy.[/red]")
+        return 1
+    if store.accounts:
+        try:
+            asyncio.run(refresh_store_health(store))
+        except Exception:
+            pass
     while True:
-        choice = main_menu(state, store)
+        dashboard(store, proxy_running())
+        choice = select_menu(
+            "Actions",
+            [
+                Choice("Refresh status", "refresh"),
+                Choice("Accounts", "accounts"),
+                Choice("Show manual setup examples", "setup"),
+                Choice("Open Zo API docs", "docs"),
+                Separator(),
+                Choice("Exit", "exit"),
+            ],
+            default=state.get("last_action", "refresh"),
+        )
         if choice in (None, "exit"):
             return 0
-        if choice == "accounts":
+        state["last_action"] = choice
+        save_state(state)
+        if choice == "refresh":
+            console.print(f"[cyan]{ICONS['run']} refreshing status ...[/cyan]")
+            if store.accounts:
+                asyncio.run(refresh_store_health(store))
+        elif choice == "accounts":
             accounts_menu(store)
             store.load()
-            continue
-        if not store.list_usable():
-            console.print("[yellow][!] No usable account yet. Open Accounts first.[/yellow]")
-            time.sleep(1)
-            accounts_menu(store)
-            if not store.list_usable():
-                continue
-        state["last_client"] = choice
-        save_state(state)
-        record = next(item for item in CLIENTS if item[0] == choice)
-        title, bin_name = record[1], record[2]
-        exe = shutil.which(bin_name)
-        if not exe:
-            console.print(f"[red][!] {title} not found in PATH.[/red]")
-            time.sleep(1.2)
-            continue
-        if not start_proxy():
-            console.print("[red][!] Failed to start local proxy.[/red]")
-            return 1
-        console.print(Panel(f"[green]Proxy ready[/green]\n{PROXY_URL}\n\nLaunching [bold]{title}[/bold] ...", border_style="green"))
-        env = env_for_client(choice)
-        return subprocess.call([exe, *sys.argv[1:]], cwd=ROOT, env=env)
+        elif choice == "setup":
+            copy_setup_examples()
+        elif choice == "docs":
+            open_docs()
 
 
 if __name__ == "__main__":
