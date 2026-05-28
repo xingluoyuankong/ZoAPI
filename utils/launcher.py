@@ -272,14 +272,14 @@ def detect_preferred_browser() -> tuple[dict[str, str], str]:
         pf = os.environ.get("PROGRAMFILES", "")
         pfx86 = os.environ.get("PROGRAMFILES(X86)", "")
         win_paths = [
-            ({"channel": "chrome"}, "Google Chrome"),
             ({"channel": "msedge"}, "Microsoft Edge"),
-            ({"executable_path": os.path.join(local, "Google", "Chrome", "Application", "chrome.exe")}, "Google Chrome"),
             ({"executable_path": os.path.join(local, "Microsoft", "Edge", "Application", "msedge.exe")}, "Microsoft Edge"),
-            ({"executable_path": os.path.join(pf, "Google", "Chrome", "Application", "chrome.exe")}, "Google Chrome"),
-            ({"executable_path": os.path.join(pfx86, "Google", "Chrome", "Application", "chrome.exe")}, "Google Chrome"),
             ({"executable_path": os.path.join(pf, "Microsoft", "Edge", "Application", "msedge.exe")}, "Microsoft Edge"),
             ({"executable_path": os.path.join(pfx86, "Microsoft", "Edge", "Application", "msedge.exe")}, "Microsoft Edge"),
+            ({"channel": "chrome"}, "Google Chrome"),
+            ({"executable_path": os.path.join(local, "Google", "Chrome", "Application", "chrome.exe")}, "Google Chrome"),
+            ({"executable_path": os.path.join(pf, "Google", "Chrome", "Application", "chrome.exe")}, "Google Chrome"),
+            ({"executable_path": os.path.join(pfx86, "Google", "Chrome", "Application", "chrome.exe")}, "Google Chrome"),
         ]
         candidates.extend(win_paths)
     elif sys.platform == "darwin":
