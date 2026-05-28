@@ -28,10 +28,6 @@ try:
 except Exception:
     from playwright.sync_api import sync_playwright
     BROWSER_BACKEND = "playwright"
-try:
-    from playwright_stealth import stealth_sync
-except Exception:
-    stealth_sync = None
 from questionary import Choice, Separator
 from rich import box
 from rich.align import Align
@@ -367,24 +363,6 @@ def detect_preferred_browser() -> tuple[dict[str, str], str]:
     return {}, "Chromium"
 
 
-def browser_stealth_scripts(context) -> None:
-    context.add_init_script("""
-Object.defineProperty(navigator, 'webdriver', { get: () => undefined });
-Object.defineProperty(navigator, 'languages', { get: () => ['en-US', 'en', 'ru-RU', 'ru'] });
-Object.defineProperty(navigator, 'platform', { get: () => 'Win32' });
-Object.defineProperty(navigator, 'plugins', { get: () => [1, 2, 3, 4, 5] });
-window.chrome = window.chrome || { runtime: {} };
-const originalQuery = window.navigator.permissions && window.navigator.permissions.query;
-if (originalQuery) {
-  window.navigator.permissions.query = (parameters) => (
-    parameters && parameters.name === 'notifications'
-      ? Promise.resolve({ state: Notification.permission })
-      : originalQuery(parameters)
-  );
-}
-""")
-
-
 def ensure_playwright_chromium(state: dict) -> bool:
     try:
         subprocess.run([sys.executable, "-m", "playwright", "install", "chromium"], cwd=ROOT, check=True)
@@ -581,38 +559,22 @@ def add_account_via_browser(state: dict, store: AccountStore) -> None:
         "https://auth.zo.computer",
     ]
     launch_opts, browser_name = detect_preferred_browser()
+    tmp_profile = tempfile.mkdtemp(prefix="zoapi-browser-")
+    browser_obj = None
     try:
         with sync_playwright() as p:
-            console.print(f"[#b8a7d9]{glyphs()['run']} Браузер: {browser_name}[/#b8a7d9]")
-            browser = p.chromium.launch(
+            console.print(f"[#b8a7d9]{glyphs()['run']} Браузер: {browser_name} ({BROWSER_BACKEND})[/#b8a7d9]")
+            # patchright/playwright handle stealth best with persistent context + channel.
+            # Do NOT pass custom args / user_agent / init scripts — that's what triggers Turnstile.
+            context = p.chromium.launch_persistent_context(
+                user_data_dir=tmp_profile,
                 headless=False,
-                ignore_default_args=["--enable-automation"],
-                args=[
-                    "--no-first-run",
-                    "--no-default-browser-check",
-                    "--disable-blink-features=AutomationControlled",
-                    "--disable-dev-shm-usage",
-                    "--disable-features=Translate,MediaRouter,OptimizationHints",
-                ],
+                no_viewport=True,
+                ignore_https_errors=True,
                 **launch_opts,
             )
-            context = browser.new_context(
-                viewport={"width": 1280, "height": 860},
-                ignore_https_errors=True,
-                java_script_enabled=True,
-                locale="en-US",
-                user_agent=(
-                    "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 "
-                    "(KHTML, like Gecko) Chrome/136.0.0.0 Safari/537.36"
-                ),
-            )
-            browser_stealth_scripts(context)
-            page = context.new_page()
-            if stealth_sync is not None:
-                try:
-                    stealth_sync(page)
-                except Exception:
-                    pass
+            browser_obj = context.browser
+            page = context.pages[0] if context.pages else context.new_page()
             try:
                 page.goto(login_url, wait_until="domcontentloaded", timeout=90000)
             except Exception:
@@ -637,15 +599,20 @@ def add_account_via_browser(state: dict, store: AccountStore) -> None:
             except Exception:
                 pass
             try:
-                browser.close()
+                if browser_obj is not None:
+                    browser_obj.close()
             except Exception:
                 pass
     except PlaywrightTimeoutError:
         pass
     except Exception as e:
+        import shutil as _shutil
+        _shutil.rmtree(tmp_profile, ignore_errors=True)
         console.print(f"[#f4b7b7]{glyphs()['err']} {tr(state, 'auth_browser_fail')}: {e}[/#f4b7b7]")
         pause(state)
         return
+    import shutil as _shutil
+    _shutil.rmtree(tmp_profile, ignore_errors=True)
     if not captured:
         console.print(f"[#e9d8a6]{glyphs()['warn']} {tr(state, 'cookies_timeout')}[/#e9d8a6]")
         if prompt_confirm(state, tr(state, "manual_fallback"), False):
