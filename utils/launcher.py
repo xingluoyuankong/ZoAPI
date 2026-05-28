@@ -17,6 +17,8 @@ ROOT = Path(__file__).resolve().parent.parent
 if str(ROOT) not in sys.path:
     sys.path.insert(0, str(ROOT))
 
+from config import PROXY_PORT
+
 import questionary
 from accounts import Account, AccountStore, clean_domain, extract_domain_from_access_token
 from playwright.sync_api import TimeoutError as PlaywrightTimeoutError
