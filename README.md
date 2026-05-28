@@ -1,12 +1,13 @@
 # zo-claude-proxy
 
-Локальный прокси: превращает [Zo Computer](https://zo.computer) в Anthropic-совместимый бэкенд для **Claude Code CLI**.
+Локальный прокси: превращает [Zo Computer](https://zo.computer) в совместимый бэкенд для **Claude Code**, **Codex**, **OpenCode** и **Hermes**.
 
-- Claude Code думает что говорит с `api.anthropic.com`, а на самом деле — с твоим Zo.
-- Модели Zo (Opus 4.7, Sonnet 4.6, GPT-5.5, Gemini 3.1, DeepSeek V4, GLM 5 и др.) доступны прямо в Claude Code.
-- Кредиты тратятся на Zo. Подписка Anthropic **не нужна**.
-- **Multi-account**: добавляй сколько угодно Zo-аккаунтов, прокси автоматически ротирует при ошибках (omnirouter-style).
-- Стрим, conversation memory, понятные ошибки в формате Anthropic.
+- Claude Code ходит в Anthropic-совместимый `POST /v1/messages`.
+- Codex / OpenCode / Hermes ходят в OpenAI-совместимые `POST /v1/chat/completions` и `POST /v1/responses`.
+- Всё это на самом деле уходит в твой Zo через **внутренний cookie-based `POST /ask`**, а не через публичный Zo API key.
+- Кредиты тратятся на Zo. Отдельная подписка Anthropic/OpenAI для этих CLI не нужна.
+- **Multi-account**: можно держать несколько Zo-аккаунтов, прокси ротирует их при ошибках.
+- Есть стрим, conversation memory и нормальные ошибки в формате клиента.
 
 ---
 
@@ -19,23 +20,38 @@
 | `POST /zo/ask` | `Authorization: Bearer zo_sk_…` | Обычно закрыт у большинства аккаунтов (403) |
 | `POST /ask` | Сессионные cookies `access_token` + `refresh_token` | Работает у всех, кто залогинен в чат |
 
-Прокси использует **внутренний `/ask`** с твоими cookies — тот же эндпоинт, что и веб-чат `<твой-домен>.zo.computer`.
+Прокси использует **внутренний `/ask`** с твоими cookies — тот же эндпоинт, что использует веб-чат Zo.
 
 ```
-┌─────────────┐    Anthropic API    ┌─────────────┐    /ask + cookies    ┌──────────┐
-│ Claude Code │ ──────────────────▶ │ zo-claude-  │ ───────────────────▶ │   Zo     │
-│    CLI      │                     │   proxy     │                      │ Computer │
-└─────────────┘                     └─────────────┘                      └──────────┘
-       ↑                                  │
-       │     Anthropic SSE                │  Multi-account rotation
-       └──────────────────────────────────┘  при ошибках
+┌─────────────┐    Anthropic / OpenAI API    ┌─────────────┐    /ask + cookies    ┌──────────┐
+│ Claude Code │ ───────────────────────────▶ │ zo-claude-  │ ───────────────────▶ │   Zo     │
+│ Codex       │                              │   proxy     │                      │ Computer │
+│ OpenCode    │                              └─────────────┘                      └──────────┘
+│ Hermes      │                                     │
+└─────────────┘                                     │  Multi-account rotation
+       ↑                                            │  + conversation cache
+       └────────────── client-compatible SSE ───────┘
 ```
+
+---
+
+## Что уже умеет
+
+### Anthropic-совместимое
+- `POST /v1/messages`
+- `GET /v1/models`
+- `GET /health`
+
+### OpenAI-совместимое
+- `POST /v1/chat/completions`
+- `POST /v1/responses`
+- `GET /v1/models`
 
 ---
 
 ## Установка
 
-Нужен Python 3.10+ и (опционально) Node для Claude Code CLI.
+Нужен Python 3.10+.
 
 ```bash
 git clone https://github.com/UvenaliyS/ZoAPI
@@ -46,14 +62,13 @@ cd ZoAPI
 ```cmd
 run.bat
 ```
-Скрипт сам создаст venv, поставит зависимости и при первом запуске откроет мастер добавления аккаунта.
 
 **macOS / Linux**:
 ```bash
 ./run.sh
 ```
 
-Когда увидишь приглашение — следуй инструкциям по добавлению аккаунта (см. ниже).
+Скрипт сам создаст venv, тихо поставит зависимости и при первом запуске откроет мастер добавления аккаунта.
 
 ---
 
@@ -62,88 +77,119 @@ run.bat
 1. Открой свой Zo workspace (`https://<твой-домен>.zo.computer`)
 2. F12 → **Network**
 3. Напиши любое сообщение в чат
-4. Найди запрос **POST `/ask`** (Type: `event-stream`)
-5. **Headers** → раздел **Request Headers** → найди строку **`cookie: …`**
-6. ПКМ → **Copy value** (или просто выдели и скопируй)
-7. В мастере setup'а вставь эту строку, нажми Enter дважды
-8. Подтверди label и домен — готово
+4. Найди запрос **POST `/ask`**
+5. В **Request Headers** скопируй строку **`cookie: …`**
+6. Вставь её в `setup.py`
 
-Парсер сам выдернет из cookie-строки `access_token` (JWT, ~30 дней TTL) и `refresh_token`.
+Парсер сам вытащит `access_token` и `refresh_token`.
 
-**Безопасность**: эти токены дают полный доступ к твоему Zo. Не публикуй их и не коммить `accounts.json` (он в `.gitignore`).
+**Важно:** это полный доступ к твоему Zo. Не публикуй и не коммить `accounts.json`.
 
 ---
 
-## Использование с Claude Code
+## Использование
 
-Установи Claude Code если не установлен:
+### Claude Code
+В одном окне держи прокси:
 ```bash
-npm install -g @anthropic-ai/claude-code
+./run.sh
 ```
 
-Запусти прокси (в одном окне):
+Во втором:
 ```bash
-./run.sh        # или run.bat
+./use-claude.sh
+```
+или на Windows:
+```cmd
+use-claude.bat
 ```
 
-В другом окне запусти Claude Code, направленный на прокси:
+Лончер:
+- ставит `ANTHROPIC_BASE_URL=http://127.0.0.1:17878`
+- ставит `ANTHROPIC_AUTH_TOKEN=zo-proxy`
+- очищает локальный `ANTHROPIC_API_KEY`
+- на Windows ещё предупреждает, если `ANTHROPIC_*` уже прописаны в shell или в user environment
+
+### Codex
 ```bash
-./use-claude.sh   # или use-claude.bat
+./use-codex.sh
+```
+или:
+```cmd
+use-codex.bat
 ```
 
-Эти скрипты выставляют:
-- `ANTHROPIC_BASE_URL=http://127.0.0.1:17878`
-- `ANTHROPIC_AUTH_TOKEN=zo-proxy` (любая непустая строка)
-- `ANTHROPIC_API_KEY=` (пустая — иначе CLI пойдёт мимо прокси к Anthropic)
+Лончер:
+- поднимает локальный `CODEX_HOME`
+- пишет туда `config.toml` с `openai_base_url = "http://127.0.0.1:17878/v1"`
+- выставляет `OPENAI_API_KEY=zo-proxy`
+- по умолчанию ставит модель `gpt-5.3-codex`
 
-Локально, без скриптов:
+### OpenCode
 ```bash
-ANTHROPIC_BASE_URL=http://127.0.0.1:17878 \
-ANTHROPIC_AUTH_TOKEN=zo-proxy \
-ANTHROPIC_API_KEY="" \
-claude
+./use-opencode.sh
 ```
+или:
+```cmd
+use-opencode.bat
+```
+
+Лончер:
+- выставляет `OPENAI_API_KEY=zo-proxy`
+- выставляет `OPENAI_BASE_URL=http://127.0.0.1:17878/v1`
+- прокидывает `OPENCODE_CONFIG_CONTENT` с custom provider на базе `@ai-sdk/openai-compatible`
+- по умолчанию использует `zo/gpt-5.3-codex`
+
+### Hermes
+```bash
+./use-hermes.sh
+```
+или:
+```cmd
+use-hermes.bat
+```
+
+Лончер:
+- выставляет `OPENAI_API_KEY=zo-proxy`
+- выставляет `OPENAI_BASE_URL=http://127.0.0.1:17878/v1`
+- по умолчанию ставит `HERMES_MODEL=gpt-5.5`
 
 ---
 
 ## Управление аккаунтами
 
-Открыть интерактивный CLI:
 ```bash
-./setup-cli.sh        # mac/linux
-setup-cli.bat         # windows
+./setup-cli.sh
+```
+или:
+```cmd
+setup-cli.bat
 ```
 
 Команды:
-- `a` — добавить аккаунт (вставка cookies)
-- `s N` — сделать активным аккаунт #N
+- `a` — добавить аккаунт
+- `s N` — сделать активным
 - `r N` — удалить
-- `t` — пингануть все аккаунты (`/models/available`)
-- `d N` / `e N` — отключить / включить
+- `t` — проверить аккаунты
+- `d N` / `e N` — выключить / включить
 - `q` — выход
-
-Состояние каждого аккаунта: e-mail, домен, TTL access_token, error streak, on/off.
 
 ---
 
 ## Ротация
 
-Прокси ведёт счётчик ошибок (`error_streak`) на каждом аккаунте:
+- **401 / 403** → мгновенная ротация на другой usable аккаунт
+- **5xx / сеть** → ротация после `MAX_ERRORS_BEFORE_ROTATE`
+- успешный запрос → streak сбрасывается
 
-- **Auth-ошибки (401) / 403** → ротация **сразу** на следующий usable аккаунт (нет смысла повторять с тем же токеном).
-- **Сетевые / 5xx** → ротация после `MAX_ERRORS_BEFORE_ROTATE` (по умолчанию 3) подряд.
-- Успешный запрос → счётчик сбрасывается.
-
-Если ни один аккаунт не отвечает — Claude Code получит чистую Anthropic-форматированную ошибку (`authentication_error` / `api_error`).
-
-Сменить активный аккаунт без рестарта прокси:
+Сменить активный аккаунт без рестарта:
 ```bash
 curl -X POST http://127.0.0.1:17878/v1/admin/active \
   -H 'Content-Type: application/json' \
   -d '{"label":"acc2"}'
 ```
 
-Посмотреть статус:
+Проверить статус:
 ```bash
 curl http://127.0.0.1:17878/v1/admin/accounts | jq
 ```
@@ -152,69 +198,70 @@ curl http://127.0.0.1:17878/v1/admin/accounts | jq
 
 ## Выбор модели
 
-Claude Code обычно просит `claude-sonnet-4-5`, `claude-opus-4-…` и т.п. — прокси находит подходящую модель Zo через `MODEL_MAP` в `config.py`:
+`config.py` содержит подстрочные алиасы для типовых запросов от Claude/Codex/OpenCode/Hermes:
 
 ```python
 MODEL_MAP = {
-    "opus":     "zo:anthropic/claude-opus-4-7",
-    "sonnet":   "zo:anthropic/claude-sonnet-4-6",
-    "haiku":    "zo:anthropic/claude-opus-4-7",
-    "gpt-5":    "zo:openai/gpt-5.5",
-    "codex":    "zo:openai/gpt-5.3-codex",
-    "mini":     "zo:openai/gpt-5.4-mini",
-    "gemini":   "zo:google/gemini-3.1-pro-preview",
+    "claude-opus": "zo:anthropic/claude-opus-4-7",
+    "claude-sonnet": "zo:anthropic/claude-sonnet-4-6",
+    "gpt-5.5": "zo:openai/gpt-5.5",
+    "codex": "zo:openai/gpt-5.3-codex",
+    "gpt-5.4-mini": "zo:openai/gpt-5.4-mini",
+    "gemini": "zo:google/gemini-3.1-pro-preview",
     "deepseek": "zo:deepseek/deepseek-v4-pro",
-    "glm":      "zo:zai/glm-5",
+    "glm": "zo:zai/glm-5",
 }
 ```
 
-Совпадение по подстроке в имени. Если ничего не подошло — используется `ZO_DEFAULT_MODEL`.
-
-Список реально доступных тебе моделей:
+Список реально доступных моделей:
 ```bash
-curl http://127.0.0.1:17878/v1/models | jq '.data[] | {id, display_name, tier}'
+curl http://127.0.0.1:17878/v1/models | jq '.data[] | {id, display_name, vendor}'
 ```
 
 ---
 
-## Что про тулы Claude Code
+## Что с тулами
 
-Claude Code присылает свои локальные тулы (`Read`, `Edit`, `Bash`, `Glob`, `Grep`, …) в каждом запросе. Прокси сейчас передаёт их **как описание в системном промпте** Zo. Zo отвечает текстом, и Claude Code выполняет файловые операции локально на твоей машине.
-
-Полная нативная конвертация Zo `tool_call` ↔ Anthropic `tool_use` через стрим **частично** реализована (см. `anthropic_sse.py`). На крупных тул-цепочках Zo иногда пытается использовать собственные серверные тулы (потому что инструкция «не используй свои» — мягкая). Если столкнёшься с этим — отключи персону или используй отдельную минимальную персону для Claude Code.
+- Claude Code tools сейчас пробрасываются как текстовое описание в промпт.
+- OpenAI-совместимые клиенты тоже пока сводятся к текстовому контексту, а не к полноценному серверному tool-calling мосту.
+- Для обычного coding/chat потока этого хватает, но сложные tool-call цепочки могут работать неидеально.
 
 ---
 
 ## Файлы проекта
 
 ```
-proxy.py            # HTTP сервер (FastAPI + Uvicorn)
-accounts.py         # multi-account хранилище и ротация
-zo_client.py        # клиент к /ask со стримом
-anthropic_sse.py    # конвертер Zo SSE → Anthropic SSE
-setup.py            # интерактивный CLI
-config.py           # глобальные дефолты (порт, MODEL_MAP)
-accounts.json       # хранилище сессий (gitignored, создаётся setup'ом)
+proxy.py              # FastAPI сервер
+accounts.py           # multi-account store и ротация
+zo_client.py          # клиент к Zo /ask
+anthropic_sse.py      # Zo SSE -> Anthropic SSE
+openai_sse.py         # Zo SSE -> OpenAI Chat/Responses SSE
+setup.py              # интерактивный мастер аккаунтов
+config.py             # порт, MODEL_MAP и дефолты
 run.bat / run.sh
-use-claude.bat / use-claude.sh
 setup-cli.bat / setup-cli.sh
+use-claude.bat / use-claude.sh
+use-codex.bat / use-codex.sh
+use-opencode.bat / use-opencode.sh
+use-hermes.bat / use-hermes.sh
 ```
 
 ---
 
 ## Известные ограничения
 
-- **Auto-refresh JWT** ещё не реализован — когда `access_token` истечёт (~30 дней), пересоздай аккаунт через setup. Видно в `setup.py` колонке TTL.
-- Картинки/файлы во входе пока не пробрасываются.
-- Тулы Claude Code (см. выше) ходят с оговорками.
+- **Auto-refresh JWT** пока нет — когда cookie-сессия протухнет, просто пере-добавь аккаунт через setup.
+- Вложения картинок/файлов пока режутся до текстового суррогата.
+- Tool use мост пока не идеален, особенно вне Claude Code.
+- Реальная совместимость лучше всего на текстовых и обычных coding-сценариях; экзотические фичи конкретных CLI могут ожидать ещё больше полей.
 
 ---
 
 ## Безопасность
 
-- `accounts.json` лежит локально, в `.gitignore`.
-- Токены кладёшь только в свой собственный setup — никуда не шлёшь.
-- Если ты делился своим cookie-хедером для отладки (например с другим разработчиком) — пересоздай сессию: logout + login в браузере. Старые токены сразу инвалидируются.
+- `accounts.json` и `.codex-home/` не коммитятся.
+- Токены живут только локально.
+- Если cookie утёк — разлогинься и залогинься заново в Zo.
 
 ---
 

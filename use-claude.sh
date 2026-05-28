@@ -4,6 +4,13 @@ set -euo pipefail
 
 PORT="${PROXY_PORT:-17878}"
 
+if [ -n "${ANTHROPIC_API_KEY:-}" ]; then
+  echo "[warn] ANTHROPIC_API_KEY already set in this shell. Clearing it locally for Claude."
+fi
+if [ -n "${ANTHROPIC_BASE_URL:-}" ]; then
+  echo "[warn] ANTHROPIC_BASE_URL already set in this shell. Overriding it for Claude."
+fi
+
 export ANTHROPIC_BASE_URL="http://127.0.0.1:${PORT}"
 export ANTHROPIC_AUTH_TOKEN="zo-proxy"      # любая непустая строка
 export ANTHROPIC_API_KEY=""                  # должна быть пустой, иначе CLI пойдёт в Anthropic

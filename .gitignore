@@ -1,6 +1,7 @@
 accounts.json
 .env
 .venv/
+.codex-home/
 __pycache__/
 *.pyc
 *.pyo

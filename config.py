@@ -19,22 +19,32 @@ PROXY_PORT = 17878
 
 # === Модели ===
 
-# Модель Zo по умолчанию (когда Claude Code не указал явно).
+# Модель Zo по умолчанию (когда клиент не указал явно).
 # Полный список: GET https://api.zo.computer/models/available
 ZO_DEFAULT_MODEL = "zo:anthropic/claude-opus-4-7"
 
-# Мэппинг: что Claude Code просит → что отправляем в Zo.
+# Мэппинг: что клиент просит → что отправляем в Zo.
 # Ключ — подстрока в названии модели из запроса.
 MODEL_MAP = {
-    "opus":     "zo:anthropic/claude-opus-4-7",
-    "sonnet":   "zo:anthropic/claude-sonnet-4-6",
-    "haiku":    "zo:anthropic/claude-opus-4-7",   # haiku в Zo нет — шлём opus
-    "gpt-5":    "zo:openai/gpt-5.5",
-    "codex":    "zo:openai/gpt-5.3-codex",
-    "mini":     "zo:openai/gpt-5.4-mini",
-    "gemini":   "zo:google/gemini-3.1-pro-preview",
+    "claude-opus": "zo:anthropic/claude-opus-4-7",
+    "claude-sonnet": "zo:anthropic/claude-sonnet-4-6",
+    "claude-haiku": "zo:anthropic/claude-opus-4-7",
+    "opus": "zo:anthropic/claude-opus-4-7",
+    "sonnet": "zo:anthropic/claude-sonnet-4-6",
+    "haiku": "zo:anthropic/claude-opus-4-7",
+    "gpt-5.5": "zo:openai/gpt-5.5",
+    "gpt-5.4-mini": "zo:openai/gpt-5.4-mini",
+    "gpt-5.3-codex": "zo:openai/gpt-5.3-codex",
+    "gpt-5.3": "zo:openai/gpt-5.3-codex",
+    "gpt-5-mini": "zo:openai/gpt-5.4-mini",
+    "gpt-5": "zo:openai/gpt-5.5",
+    "codex": "zo:openai/gpt-5.3-codex",
+    "o4-mini": "zo:openai/gpt-5.4-mini",
+    "o3": "zo:openai/gpt-5.5",
+    "mini": "zo:openai/gpt-5.4-mini",
+    "gemini": "zo:google/gemini-3.1-pro-preview",
     "deepseek": "zo:deepseek/deepseek-v4-pro",
-    "glm":      "zo:zai/glm-5",
+    "glm": "zo:zai/glm-5",
 }
 
 

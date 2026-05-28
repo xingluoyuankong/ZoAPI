@@ -103,6 +103,40 @@ def _anthropic_err(status: int, message: str) -> JSONResponse:
     )
 
 
+def _openai_err(status: int, message: str) -> JSONResponse:
+    err_type = {
+        400: "invalid_request_error",
+        401: "authentication_error",
+        403: "permission_error",
+        404: "not_found_error",
+        409: "conflict_error",
+        413: "request_too_large",
+        422: "invalid_request_error",
+        429: "rate_limit_error",
+        500: "server_error",
+        502: "server_error",
+        503: "server_error",
+        504: "server_error",
+    }.get(status, "server_error")
+    return JSONResponse(
+        status_code=status,
+        content={
+            "error": {
+                "message": _humanize(message),
+                "type": err_type,
+                "param": None,
+                "code": status,
+            }
+        },
+    )
+
+
+def _error_for_path(path: str, status: int, message: str) -> JSONResponse:
+    if path.startswith("/v1/chat/completions") or path.startswith("/v1/responses"):
+        return _openai_err(status, message)
+    return _anthropic_err(status, message)
+
+
 def _stringify_content(content: Any) -> str:
     """Anthropic content может быть строкой или массивом блоков."""
     if isinstance(content, str):
@@ -135,8 +169,42 @@ def _stringify_content(content: Any) -> str:
         elif t == "image":
             parts.append("[image attachment elided]")
         elif t == "thinking":
-            # обычно не реэхим thinking назад
             pass
+        else:
+            parts.append(str(block))
+    return "".join(parts)
+
+
+def _stringify_openai_content(content: Any) -> str:
+    if isinstance(content, str):
+        return content
+    if not isinstance(content, list):
+        return str(content)
+    parts: list[str] = []
+    for block in content:
+        if not isinstance(block, dict):
+            parts.append(str(block))
+            continue
+        t = block.get("type")
+        if t in ("text", "input_text", "output_text"):
+            parts.append(block.get("text", ""))
+        elif t in ("image_url", "input_image"):
+            image_url = block.get("image_url")
+            if isinstance(image_url, dict):
+                image_url = image_url.get("url")
+            parts.append(f"[image attachment elided: {image_url or 'inline'}]")
+        elif t in ("tool_call", "function_call"):
+            name = block.get("name") or block.get("function", {}).get("name") or "tool"
+            args = block.get("arguments") or block.get("input") or {}
+            if not isinstance(args, str):
+                args = json.dumps(args, ensure_ascii=False)
+            parts.append(f"\n<tool_use name=\"{name}\">{args}</tool_use>\n")
+        elif t in ("tool_result", "function_call_output"):
+            call_id = block.get("call_id") or block.get("tool_call_id") or "?"
+            output = block.get("output") or block.get("content") or ""
+            if isinstance(output, list):
+                output = "\n".join(_stringify_openai_content([item]) for item in output)
+            parts.append(f"\n<tool_result id=\"{call_id}\">{output}</tool_result>\n")
         else:
             parts.append(str(block))
     return "".join(parts)
@@ -185,6 +253,86 @@ def _flatten_messages(
     return "\n".join(chunks).strip()
 
 
+def _flatten_openai_messages(
+    instructions: str | None,
+    messages: list[dict[str, Any]],
+    tools: list[dict[str, Any]] | None,
+) -> str:
+    chunks: list[str] = []
+    if instructions:
+        chunks.append("=== SYSTEM ===")
+        chunks.append(instructions.strip())
+        chunks.append("")
+    if tools:
+        chunks.append("=== AVAILABLE CLIENT TOOLS ===")
+        chunks.append(
+            "У клиента есть локальные инструменты. Если нужен вызов инструмента, "
+            "опиши его текстом и не пытайся выполнять локальные действия на сервере прокси."
+        )
+        for t in tools[:50]:
+            if not isinstance(t, dict):
+                continue
+            name = t.get("name") or t.get("function", {}).get("name") or "?"
+            desc = (t.get("description") or t.get("function", {}).get("description") or "").strip().split("\n")[0][:160]
+            chunks.append(f"- {name}: {desc}")
+        chunks.append("")
+    for m in messages:
+        role = (m.get("role") or "user").lower()
+        if role == "developer":
+            role = "system"
+        text = _stringify_openai_content(m.get("content"))
+        if not text.strip():
+            continue
+        chunks.append(f"=== {role.upper()} ===")
+        chunks.append(text.strip())
+        chunks.append("")
+    return "\n".join(chunks).strip()
+
+
+def _responses_input_to_messages(body: dict[str, Any]) -> tuple[str | None, list[dict[str, Any]], list[dict[str, Any]]]:
+    instructions = body.get("instructions")
+    tools = body.get("tools") or []
+    raw_input = body.get("input")
+    messages: list[dict[str, Any]] = []
+
+    if isinstance(raw_input, str):
+        messages.append({"role": "user", "content": raw_input})
+    elif isinstance(raw_input, dict):
+        messages.append({
+            "role": raw_input.get("role") or "user",
+            "content": raw_input.get("content") or raw_input,
+        })
+    elif isinstance(raw_input, list):
+        for item in raw_input:
+            if isinstance(item, str):
+                messages.append({"role": "user", "content": item})
+            elif isinstance(item, dict):
+                itype = item.get("type")
+                if itype in (None, "message"):
+                    messages.append({
+                        "role": item.get("role") or "user",
+                        "content": item.get("content") or "",
+                    })
+                elif itype in ("function_call_output", "tool_result"):
+                    messages.append({
+                        "role": "user",
+                        "content": [{
+                            "type": "function_call_output",
+                            "call_id": item.get("call_id") or item.get("tool_call_id"),
+                            "output": item.get("output") or item.get("content") or "",
+                        }],
+                    })
+                else:
+                    messages.append({
+                        "role": item.get("role") or "user",
+                        "content": [item],
+                    })
+            else:
+                messages.append({"role": "user", "content": str(item)})
+
+    return instructions, messages, tools
+
+
 def _convo_key(account_label: str, system: str | None, first_user_msg: str) -> str:
     """
     Стабильный ключ для кэширования conversation_id. Меняется когда
@@ -204,7 +352,7 @@ def _resolve_model(requested: str | None) -> str:
     if requested.startswith("zo:"):
         return requested
     low = requested.lower()
-    for needle, target in MODEL_MAP.items():
+    for needle, target in sorted(MODEL_MAP.items(), key=lambda item: len(item[0]), reverse=True):
         if needle.lower() in low:
             return target
     return ZO_DEFAULT_MODEL
@@ -289,12 +437,12 @@ app = FastAPI(title="zo-claude-proxy")
 
 @app.exception_handler(HTTPException)
 async def _http_exc(request: Request, exc: HTTPException) -> JSONResponse:
-    return _anthropic_err(exc.status_code, str(exc.detail))
+    return _error_for_path(request.url.path, exc.status_code, str(exc.detail))
 
 
 @app.exception_handler(RequestValidationError)
 async def _val_exc(request: Request, exc: RequestValidationError) -> JSONResponse:
-    return _anthropic_err(400, f"Bad request body: {exc.errors()[:3]}")
+    return _error_for_path(request.url.path, 400, f"Bad request body: {exc.errors()[:3]}")
 
 
 @app.on_event("shutdown")
@@ -365,21 +513,28 @@ async def list_models() -> dict[str, Any]:
         zo_name = m.get("model_name")
         if not zo_name:
             continue
-        # отрисуем имя в Anthropic-стиле, чтобы Claude Code не ругался
-        anth_id = zo_name.split("/")[-1]
+        public_id = zo_name.split("/")[-1]
         data.append(
             {
-                "id": anth_id,
+                "id": public_id,
+                "object": "model",
                 "type": "model",
-                "display_name": m.get("label") or anth_id,
+                "display_name": m.get("label") or public_id,
+                "created": 1704067200,
                 "created_at": "2024-01-01T00:00:00Z",
+                "owned_by": "zo",
                 "zo_model_name": zo_name,
                 "context_window": m.get("context_window"),
                 "vendor": m.get("vendor"),
                 "tier": m.get("type"),
             }
         )
-    return {"data": data, "has_more": False, "first_id": data[0]["id"] if data else None}
+    return {
+        "object": "list",
+        "data": data,
+        "has_more": False,
+        "first_id": data[0]["id"] if data else None,
+    }
 
 
 # ------------------------- /v1/messages -------------------------
@@ -432,6 +587,313 @@ async def messages(req: Request) -> Any:
         )
 
     return await _do_nonstream(flat, zo_model, system, first_user, model_req or "claude")
+
+
+@app.post("/v1/chat/completions")
+async def chat_completions(req: Request) -> Any:
+    try:
+        body = await req.json()
+    except Exception as e:
+        raise HTTPException(status_code=400, detail=f"bad json: {e}")
+
+    model_req = body.get("model")
+    zo_model = _resolve_model(model_req)
+    msgs: list[dict[str, Any]] = body.get("messages") or []
+    tools = body.get("tools") or []
+    stream = bool(body.get("stream", False))
+
+    instructions_parts: list[str] = []
+    for m in msgs:
+        if (m.get("role") or "").lower() in ("system", "developer"):
+            instructions_parts.append(_stringify_openai_content(m.get("content")))
+    instructions = "\n\n".join(p for p in instructions_parts if p.strip()) or None
+    flat = _flatten_openai_messages(instructions, msgs, tools)
+    first_user = next(
+        (_stringify_openai_content(m.get("content")) for m in msgs if (m.get("role") or "").lower() == "user"),
+        "",
+    )
+
+    log.info(
+        "POST /v1/chat/completions: model=%s -> %s, msgs=%d, tools=%d, stream=%s",
+        model_req,
+        zo_model,
+        len(msgs),
+        len(tools),
+        stream,
+    )
+
+    if stream:
+        return StreamingResponse(
+            _do_openai_chat_stream(flat, zo_model, instructions, first_user, model_req or "gpt-5"),
+            media_type="text/event-stream",
+            headers={"cache-control": "no-cache", "x-accel-buffering": "no"},
+        )
+    return await _do_openai_chat_nonstream(flat, zo_model, instructions, first_user, model_req or "gpt-5")
+
+
+@app.post("/v1/responses")
+async def responses_api(req: Request) -> Any:
+    try:
+        body = await req.json()
+    except Exception as e:
+        raise HTTPException(status_code=400, detail=f"bad json: {e}")
+
+    model_req = body.get("model")
+    zo_model = _resolve_model(model_req)
+    instructions, msgs, tools = _responses_input_to_messages(body)
+    flat = _flatten_openai_messages(instructions, msgs, tools)
+    first_user = next(
+        (_stringify_openai_content(m.get("content")) for m in msgs if (m.get("role") or "").lower() == "user"),
+        "",
+    )
+    stream = bool(body.get("stream", False))
+
+    log.info(
+        "POST /v1/responses: model=%s -> %s, msgs=%d, tools=%d, stream=%s",
+        model_req,
+        zo_model,
+        len(msgs),
+        len(tools),
+        stream,
+    )
+
+    if stream:
+        return StreamingResponse(
+            _do_responses_stream(flat, zo_model, instructions, first_user, model_req or "gpt-5"),
+            media_type="text/event-stream",
+            headers={"cache-control": "no-cache", "x-accel-buffering": "no"},
+        )
+    return await _do_responses_nonstream(flat, zo_model, instructions, first_user, model_req or "gpt-5")
+
+
+async def _do_openai_chat_stream(
+    flat_input: str,
+    zo_model: str,
+    system: str | None,
+    first_user: str,
+    openai_model_name: str,
+) -> AsyncIterator[bytes]:
+    from openai_sse import ChatCompletionsTranslator
+
+    translator = ChatCompletionsTranslator(model=openai_model_name)
+    started = False
+    attempts: list[str] = []
+    while True:
+        acc = _pick_account()
+        if not acc:
+            for chunk in translator.error(401, "No usable Zo account. Run setup.py."):
+                yield chunk.encode("utf-8")
+            return
+        if acc.label in attempts:
+            for chunk in translator.error(502, f"All accounts failed: {attempts}"):
+                yield chunk.encode("utf-8")
+            return
+        attempts.append(acc.label)
+        convo_key = _convo_key(acc.label, system, first_user)
+        convo_id = CONVO_CACHE.get(convo_key)
+        try:
+            async for ev_name, data, conv_header in ZO.ask_stream(
+                acc,
+                q=flat_input,
+                model_name=zo_model,
+                conversation_id=convo_id,
+                expanded_paths=EXPANDED_PATHS,
+            ):
+                if not started:
+                    for chunk in translator.start():
+                        yield chunk.encode("utf-8")
+                    started = True
+                if conv_header:
+                    CONVO_CACHE[convo_key] = conv_header
+                for chunk in translator.feed(ev_name, data):
+                    yield chunk.encode("utf-8")
+            for chunk in translator.finish():
+                yield chunk.encode("utf-8")
+            STORE.mark_ok(acc.label)
+            return
+        except ZoAuthError as e:
+            new = _force_rotate(acc, e)
+            if new and not started and new.label != acc.label:
+                continue
+            for chunk in translator.error(401, f"Zo auth: {e}"):
+                yield chunk.encode("utf-8")
+            return
+        except ZoForbidden as e:
+            new = _force_rotate(acc, e)
+            if new and not started and new.label != acc.label:
+                continue
+            for chunk in translator.error(403, f"Zo: {e}"):
+                yield chunk.encode("utf-8")
+            return
+        except (ZoServerError, ZoBadRequest, httpx.HTTPError) as e:
+            new = _rotate_on_error(acc, e)
+            if new and not started and new.label != acc.label:
+                continue
+            for chunk in translator.error(502, f"Zo error: {e}"):
+                yield chunk.encode("utf-8")
+            return
+        except Exception as e:
+            log.exception("[%s] openai stream unexpected", acc.label)
+            for chunk in translator.error(500, f"proxy error: {e}"):
+                yield chunk.encode("utf-8")
+            return
+
+
+async def _do_openai_chat_nonstream(
+    flat_input: str,
+    zo_model: str,
+    system: str | None,
+    first_user: str,
+    openai_model_name: str,
+) -> dict[str, Any]:
+    from openai_sse import build_openai_nonstream
+
+    text = await _collect_text_response(flat_input, zo_model, system, first_user)
+    return build_openai_nonstream(openai_model_name, text)
+
+
+async def _do_responses_stream(
+    flat_input: str,
+    zo_model: str,
+    system: str | None,
+    first_user: str,
+    openai_model_name: str,
+) -> AsyncIterator[bytes]:
+    from openai_sse import ResponsesApiTranslator
+
+    translator = ResponsesApiTranslator(model=openai_model_name)
+    started = False
+    attempts: list[str] = []
+    while True:
+        acc = _pick_account()
+        if not acc:
+            for chunk in translator.error(401, "No usable Zo account. Run setup.py."):
+                yield chunk.encode("utf-8")
+            return
+        if acc.label in attempts:
+            for chunk in translator.error(502, f"All accounts failed: {attempts}"):
+                yield chunk.encode("utf-8")
+            return
+        attempts.append(acc.label)
+        convo_key = _convo_key(acc.label, system, first_user)
+        convo_id = CONVO_CACHE.get(convo_key)
+        try:
+            async for ev_name, data, conv_header in ZO.ask_stream(
+                acc,
+                q=flat_input,
+                model_name=zo_model,
+                conversation_id=convo_id,
+                expanded_paths=EXPANDED_PATHS,
+            ):
+                if not started:
+                    for chunk in translator.start():
+                        yield chunk.encode("utf-8")
+                    started = True
+                if conv_header:
+                    CONVO_CACHE[convo_key] = conv_header
+                for chunk in translator.feed(ev_name, data):
+                    yield chunk.encode("utf-8")
+            for chunk in translator.finish():
+                yield chunk.encode("utf-8")
+            STORE.mark_ok(acc.label)
+            return
+        except ZoAuthError as e:
+            new = _force_rotate(acc, e)
+            if new and not started and new.label != acc.label:
+                continue
+            for chunk in translator.error(401, f"Zo auth: {e}"):
+                yield chunk.encode("utf-8")
+            return
+        except ZoForbidden as e:
+            new = _force_rotate(acc, e)
+            if new and not started and new.label != acc.label:
+                continue
+            for chunk in translator.error(403, f"Zo: {e}"):
+                yield chunk.encode("utf-8")
+            return
+        except (ZoServerError, ZoBadRequest, httpx.HTTPError) as e:
+            new = _rotate_on_error(acc, e)
+            if new and not started and new.label != acc.label:
+                continue
+            for chunk in translator.error(502, f"Zo error: {e}"):
+                yield chunk.encode("utf-8")
+            return
+        except Exception as e:
+            log.exception("[%s] responses stream unexpected", acc.label)
+            for chunk in translator.error(500, f"proxy error: {e}"):
+                yield chunk.encode("utf-8")
+            return
+
+
+async def _collect_text_response(
+    flat_input: str,
+    zo_model: str,
+    system: str | None,
+    first_user: str,
+) -> str:
+    attempts: list[str] = []
+    while True:
+        acc = _pick_account()
+        if not acc:
+            raise HTTPException(status_code=401, detail="No usable Zo account. Run setup.py.")
+        if acc.label in attempts:
+            raise HTTPException(status_code=502, detail=f"All accounts failed: {attempts}")
+        attempts.append(acc.label)
+        convo_key = _convo_key(acc.label, system, first_user)
+        convo_id = CONVO_CACHE.get(convo_key)
+        try:
+            text_acc: list[str] = []
+            new_conv: str | None = None
+            async for ev_name, data, conv_header in ZO.ask_stream(
+                acc,
+                q=flat_input,
+                model_name=zo_model,
+                conversation_id=convo_id,
+                expanded_paths=EXPANDED_PATHS,
+            ):
+                if conv_header and not new_conv:
+                    new_conv = conv_header
+                if ev_name == "PartDeltaEvent":
+                    delta = data.get("delta") or {}
+                    if delta.get("part_delta_kind") in ("text", "thinking"):
+                        text_acc.append(delta.get("content_delta") or "")
+                elif ev_name == "PartStartEvent":
+                    part = data.get("part") or {}
+                    if part.get("part_kind") in ("text", "thinking"):
+                        text_acc.append(part.get("content") or "")
+            if new_conv:
+                CONVO_CACHE[convo_key] = new_conv
+            text = "".join(text_acc).strip() or "(empty response)"
+            STORE.mark_ok(acc.label)
+            return text
+        except ZoAuthError as e:
+            new = _force_rotate(acc, e)
+            if new and new.label != acc.label:
+                continue
+            raise HTTPException(status_code=401, detail=str(e))
+        except ZoForbidden as e:
+            new = _force_rotate(acc, e)
+            if new and new.label != acc.label:
+                continue
+            raise HTTPException(status_code=403, detail=str(e))
+        except (ZoServerError, ZoBadRequest, httpx.HTTPError) as e:
+            new = _rotate_on_error(acc, e)
+            if new and new.label != acc.label:
+                continue
+            raise HTTPException(status_code=502, detail=str(e))
+
+
+async def _do_responses_nonstream(
+    flat_input: str,
+    zo_model: str,
+    system: str | None,
+    first_user: str,
+    openai_model_name: str,
+) -> dict[str, Any]:
+    from openai_sse import build_responses_nonstream
+
+    text = await _collect_text_response(flat_input, zo_model, system, first_user)
+    return build_responses_nonstream(openai_model_name, text)
 
 
 # ---------------------------------------------------------------------------

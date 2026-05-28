@@ -12,7 +12,7 @@ Multi-account store для zo-claude-proxy.
   "accounts": [
     {
       "label": "main",
-      "domain": "uvenaliy",
+      "domain": "user",
       "access_token": "eyJ...",
       "refresh_token": "...",
       "added_at": "2026-05-28T13:00:00Z",
@@ -60,6 +60,8 @@ class Account:
     last_err: str | None = None
     error_streak: int = 0
     disabled: bool = False
+    balance_cents: int | None = None
+    balance_checked_at: float | None = None
 
     # ------ JWT helpers ------
 
@@ -127,36 +129,41 @@ class AccountStore:
     Сериализуется в accounts.json при каждом изменении.
     """
 
-    def __init__(self, path: Path | None = None) -> None:
-        self.path = path or ACCOUNTS_FILE
+    def __init__(self, path: Path = ACCOUNTS_FILE) -> None:
+        self.path = path
         self._lock = threading.RLock()
         self.accounts: list[Account] = []
         self.active_label: str | None = None
+        self.mode: str = "fixed"  # "fixed" | "rotation"
+        self._rr_idx: int = 0
         self.load()
 
     # ------ disk I/O ------
 
     def load(self) -> None:
         with self._lock:
+            self.accounts = []
+            self.active_label = None
+            self.mode = "fixed"
             if not self.path.exists():
-                self.accounts = []
-                self.active_label = None
                 return
             try:
-                data = json.loads(self.path.read_text("utf-8"))
+                data = json.loads(self.path.read_text(encoding="utf-8"))
             except Exception:
-                self.accounts = []
-                self.active_label = None
                 return
-            self.accounts = [Account.from_dict(a) for a in data.get("accounts", [])]
+            self.accounts = [
+                Account.from_dict(d) for d in data.get("accounts", [])
+            ]
             self.active_label = data.get("active") or (
                 self.accounts[0].label if self.accounts else None
             )
+            self.mode = data.get("mode", "fixed")
 
     def save(self) -> None:
         with self._lock:
             data = {
                 "active": self.active_label,
+                "mode": self.mode,
                 "accounts": [a.to_dict() for a in self.accounts],
             }
             tmp = self.path.with_suffix(".json.tmp")
@@ -295,6 +302,25 @@ class AccountStore:
             self.active_label = next_acc.label
             self.save()
             return next_acc
+
+    def set_mode(self, mode: str) -> None:
+        with self._lock:
+            self.mode = "rotation" if mode == "rotation" else "fixed"
+            self.save()
+
+    def current(self) -> Account | None:
+        """
+        Возвращает аккаунт, который нужно использовать для следующего запроса.
+        mode=fixed → get_active(); mode=rotation → round-robin по usable.
+        """
+        with self._lock:
+            if self.mode != "rotation":
+                return self.get_active()
+            usable = [a for a in self.accounts if a.is_usable()]
+            if not usable:
+                return None
+            self._rr_idx = (self._rr_idx + 1) % len(usable)
+            return usable[self._rr_idx]
 
 
 # ---------------------------------------------------------------------------

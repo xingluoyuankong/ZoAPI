@@ -15,6 +15,7 @@ X-Zo-Workspace-Origin, x-zo-streaming-version и т.д.), потому что
 
 from __future__ import annotations
 
+import asyncio
 import json
 import logging
 import uuid
@@ -26,21 +27,28 @@ from accounts import Account
 
 log = logging.getLogger("zo-proxy.client")
 
+FIRST_CHUNK_TIMEOUT = 40.0  # сек до первого события от Zo → ZoTimeout
+BETWEEN_CHUNKS_TIMEOUT = 90.0  # сек между чанками внутри стрима
+
 
 class ZoAuthError(Exception):
     """access_token истёк или невалиден."""
 
 
 class ZoForbidden(Exception):
-    """403 от Zo (нет доступа к фиче / аккаунту / модели)."""
+    """403 от Zo."""
 
 
 class ZoServerError(Exception):
-    """5xx или иная нестабильность."""
+    """5xx."""
 
 
 class ZoBadRequest(Exception):
     """4xx, не auth."""
+
+
+class ZoTimeout(Exception):
+    """Нет ответа >FIRST_CHUNK_TIMEOUT секунд."""
 
 
 def _headers_for(account: Account, idempotency_key: str | None = None) -> dict[str, str]:
@@ -145,6 +153,23 @@ class ZoClient:
         except Exception:
             return False
 
+    async def fetch_balance(self, account: Account) -> int | None:
+        """Возвращает суммарный available баланс в центах или None при ошибке."""
+        try:
+            r = await self._client.get(
+                "/billing/credit-grants?testmode=false",
+                headers=_headers_for(account),
+                cookies=_cookies_for(account),
+            )
+            if r.status_code != 200:
+                return None
+            grants = r.json()
+            if isinstance(grants, list):
+                return sum(g.get("available_cents", 0) for g in grants)
+        except Exception:
+            pass
+        return None
+
     # ------------------------- streaming chat -------------------------
 
     async def ask_stream(
@@ -190,12 +215,27 @@ class ZoClient:
                 _raise_status(resp.status_code, err)
 
             conv_header = resp.headers.get("x-conversation-id")
-            first = True
+            first_event = True
+            got_first = False
 
             event_type: str | None = None
             data_lines: list[str] = []
 
-            async for line in resp.aiter_lines():
+            aiter = resp.aiter_lines().__aiter__()
+            while True:
+                timeout = FIRST_CHUNK_TIMEOUT if not got_first else BETWEEN_CHUNKS_TIMEOUT
+                try:
+                    line = await asyncio.wait_for(aiter.__anext__(), timeout=timeout)
+                except StopAsyncIteration:
+                    break
+                except asyncio.TimeoutError:
+                    raise ZoTimeout(
+                        f"Zo не ответил за {timeout:.0f}с — "
+                        f"{'первый чанк' if not got_first else 'продолжение'}"
+                    )
+
+                got_first = True
+
                 if not line:
                     if event_type and data_lines:
                         raw = "\n".join(data_lines)
@@ -203,8 +243,8 @@ class ZoClient:
                             data = json.loads(raw)
                         except json.JSONDecodeError:
                             data = {"_raw": raw}
-                        yield event_type, data, conv_header if first else None
-                        first = False
+                        yield event_type, data, conv_header if first_event else None
+                        first_event = False
                     event_type = None
                     data_lines = []
                     continue
