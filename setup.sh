@@ -36,7 +36,7 @@ fi
 
 VPY="./.venv/bin/python"
 
-echo "[+] Обновляю pip/setuptools/wheel..."
+echo "[+] Обновляю pip / setuptools / wheel..."
 "$VPY" -m pip install --quiet --upgrade pip setuptools wheel
 
 echo "[+] Устанавливаю зависимости проекта..."
@@ -44,6 +44,9 @@ echo "[+] Устанавливаю зависимости проекта..."
 
 echo "[+] Проверяю Python-модули..."
 "$VPY" -c "import fastapi, uvicorn, httpx, pydantic, questionary, rich, playwright; print('ok')"
+
+echo "[+] Ставлю браузер Chromium для Playwright..."
+"$VPY" -m playwright install chromium
 
 echo
 echo "[+] Готово. Сейчас запущу ZoAPI..."

@@ -58,10 +58,10 @@ if not exist ".venv\Scripts\python.exe" (
 
 set "VPY=.venv\Scripts\python.exe"
 
-echo [+] Обновляю pip/setuptools/wheel...
+echo [+] Обновляю pip / setuptools / wheel...
 "%VPY%" -m pip install --quiet --upgrade pip setuptools wheel
 if errorlevel 1 (
-  echo [!] Не удалось обновить pip/setuptools/wheel
+  echo [!] Не удалось обновить pip / setuptools / wheel
   echo.
   pause
   exit /b 1
@@ -80,6 +80,15 @@ echo [+] Проверяю Python-модули...
 "%VPY%" -c "import fastapi, uvicorn, httpx, pydantic, questionary, rich, playwright; print('ok')"
 if errorlevel 1 (
   echo [!] Проверка импортов не прошла.
+  echo.
+  pause
+  exit /b 1
+)
+
+echo [+] Ставлю браузер Chromium для Playwright...
+"%VPY%" -m playwright install chromium
+if errorlevel 1 (
+  echo [!] Не удалось установить Chromium для Playwright.
   echo.
   pause
   exit /b 1

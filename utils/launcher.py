@@ -110,6 +110,13 @@ LANGS = {
         "app_name": "ZoAPI",
         "subtitle": "локальный api для Zo Computer",
         "balance": "Баланс",
+        "table_title": "Аккаунты",
+        "col_index": "#",
+        "col_label": "Label",
+        "col_email": "Email",
+        "col_domain": "Domain",
+        "col_ttl": "TTL",
+        "col_state": "State",
     },
     "en": {
         "boot": "booting",
@@ -182,6 +189,13 @@ LANGS = {
         "app_name": "ZoAPI",
         "subtitle": "local api for Zo Computer",
         "balance": "Balance",
+        "table_title": "Accounts",
+        "col_index": "#",
+        "col_label": "Label",
+        "col_email": "Email",
+        "col_domain": "Domain",
+        "col_ttl": "TTL",
+        "col_state": "State",
     },
 }
 
@@ -320,21 +334,21 @@ def header_panel(state: dict, running: bool) -> Panel:
 
 def accounts_table(state: dict, store: AccountStore) -> Table:
     table = Table(expand=True, box=Table.box.SIMPLE_HEAVY)
-    table.add_column("*", width=3, justify="center")
-    table.add_column("Label", width=12, overflow="fold")
-    table.add_column("Email", width=24, overflow="fold")
-    table.add_column("Domain", width=16, overflow="fold")
-    table.add_column("TTL", width=7, justify="center")
+    table.add_column(tr(state, "col_index"), width=4, justify="center")
+    table.add_column(tr(state, "col_label"), width=14, overflow="fold")
+    table.add_column(tr(state, "col_email"), width=28, overflow="fold")
+    table.add_column(tr(state, "col_domain"), width=18, overflow="fold")
+    table.add_column(tr(state, "col_ttl"), width=8, justify="center")
     table.add_column(tr(state, "balance"), width=12, justify="right")
-    table.add_column("State", width=12, overflow="fold")
+    table.add_column(tr(state, "col_state"), width=12, overflow="fold")
     if not store.accounts:
         table.add_row("", "—", tr(state, "empty_accounts"), "—", "—", "—", "—")
         return table
-    for acc in store.accounts:
-        marker = glyphs()["dot"] if acc.label == store.active_label else ""
+    for idx, acc in enumerate(store.accounts, start=1):
+        label = acc.label + (" *" if acc.label == store.active_label else "")
         status = tr(state, "state_off") if acc.disabled else (tr(state, "state_err") if acc.error_streak else tr(state, "state_ok"))
         bal = "?" if acc.balance_cents is None else f"${acc.balance_cents / 100:.2f}"
-        table.add_row(marker, acc.label, acc.email() or "?", acc.domain, fmt_ttl(acc.seconds_until_expiry()), bal, status)
+        table.add_row(str(idx), label, acc.email() or "?", acc.domain, fmt_ttl(acc.seconds_until_expiry()), bal, status)
     return table
 
 
