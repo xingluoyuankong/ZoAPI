@@ -56,19 +56,20 @@ class AnthropicStreamTranslator:
         t = AnthropicStreamTranslator(
             model="claude-opus-4-7",
             client_tool_names={"Bash", "Read", "Edit", ...},
+            enable_thinking=True,  # если клиент запросил extended thinking
         )
         yield t.start()
-        async for ev_name, ev_data, _ in zo_stream:
-            for chunk in t.feed(ev_name, ev_data):
+        async for ev_name, data in zo_stream:
+            for chunk in t.feed(ev_name, data):
                 yield chunk
-        for chunk in t.finish():
-            yield chunk
+        yield from t.finish()
     """
 
     def __init__(
         self,
         model: str = "claude-opus-4-7",
         client_tool_names: set[str] | list[str] | None = None,
+        enable_thinking: bool = False,
     ) -> None:
         self.model = model
         self.client_tool_names: set[str] = set(client_tool_names or [])
@@ -83,6 +84,7 @@ class AnthropicStreamTranslator:
         self.tool_parser = ToolCallTagParser()
         self._tool_block_open = False
         self._emitted_tool_use = False
+        self.enable_thinking = enable_thinking
 
         # Состояние для перехвата серверных Zo tool_call:
         # когда модель напрямую вызывает 'bash'/'read_file'/etc., мы
@@ -121,6 +123,13 @@ class AnthropicStreamTranslator:
                 yield from self._delta_tool_input(payload)
             elif kind == 'tool_close':
                 pass
+
+    def _handle_streamed_thinking(self, text: str) -> Iterator[str]:
+        """Emit a thinking_delta event, opening a thinking block lazily."""
+        if self.current_block_kind != "thinking":
+            yield from self._open_block("thinking")
+        if text:
+            yield from self._delta_thinking(text)
 
     # ---------------- lifecycle ----------------
 
@@ -294,7 +303,10 @@ class AnthropicStreamTranslator:
             if kind in ("thinking",):
                 # Claude Code обычно не запрашивает thinking — отдаём как обычный текст,
                 # чтобы Claude Code не падал. Можно вырубить через config.HIDE_THINKING.
-                yield from self._handle_streamed_text(part.get("content") or "")
+                if self.enable_thinking:
+                    yield from self._handle_streamed_thinking(part.get("content") or "")
+                else:
+                    yield from self._handle_streamed_text(part.get("content") or "")
             elif kind == "text":
                 yield from self._handle_streamed_text(part.get("content") or "")
             elif kind in ("tool_call", "tool_use"):
@@ -314,7 +326,10 @@ class AnthropicStreamTranslator:
             elif dkind == "thinking":
                 text = delta.get("content_delta") or ""
                 # см. выше — рендерим thinking как текст
-                yield from self._handle_streamed_text(text)
+                if self.enable_thinking:
+                    yield from self._handle_streamed_thinking(text)
+                else:
+                    yield from self._handle_streamed_text(text)
             elif dkind in ("tool_call", "tool_use", "args"):
                 partial = delta.get("args_delta") or delta.get("content_delta") or ""
                 if self._zo_tool_active:

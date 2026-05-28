@@ -35,15 +35,12 @@ fi
 
 # --- 2. accounts.json ---
 if [[ ! -f "$ACCOUNTS_FILE" ]]; then
-    echo "[!] accounts.json не найден в $(pwd)"
+    echo "[*] accounts.json не найден — создаю пустой."
+    echo "    После запуска контейнера добавь аккаунт через браузер по адресу"
+    echo "    http://localhost:${PORT}/auth (вкладка 'add account')."
     echo
-    echo "    Сначала сделай на хосте:"
-    echo "      1) ./setup.sh        (первый раз — поставит venv)"
-    echo "      2) ./run.sh          (откроет TUI)"
-    echo "      3) в меню: «Добавить аккаунт через временный браузер»"
-    echo "      4) закрой лаунчер"
-    echo "    После этого снова запусти ./docker_run.sh"
-    exit 1
+    echo '{"active": null, "accounts": []}' > "$ACCOUNTS_FILE"
+    NEED_BROWSER_AUTH=1
 fi
 
 # --- 3. runtime.json (если нет — создаём пустой, чтобы mount не упал) ---
@@ -100,7 +97,14 @@ cat <<EOF
    docker stop    $CONTAINER_NAME       — стоп
    docker rm -f   $CONTAINER_NAME       — снести
 
- Браузерный логин / редактирование аккаунтов — только через ./run.sh
- на хосте. Контейнер видит изменения сразу (mount общий с хостом).
+ Добавление аккаунта в контейнер:
+   →  Открой в браузере  http://127.0.0.1:${PORT}/auth
+      Зайди в свой zo.computer в соседней вкладке, открой DevTools →
+      Application → Cookies, скопируй access_token и refresh_token,
+      вставь в форму. Контейнер сразу провалидирует и сохранит.
+
+ Альтернатива (если у тебя есть хост с GUI):
+   →  ./run.sh на хосте — Playwright откроет временный браузер,
+      ты залогинишься, и accounts.json подхватится через mount.
 
 EOF

@@ -330,18 +330,39 @@ LANGS = {
 }
 
 
+def _detect_default_lang() -> str:
+    """Угадывает язык TUI по системе. Возвращает 'ru' или 'en'."""
+    import locale, os
+    candidates = [
+        os.environ.get("LANG", ""),
+        os.environ.get("LC_ALL", ""),
+        os.environ.get("LC_MESSAGES", ""),
+    ]
+    try:
+        loc = locale.getdefaultlocale()[0] or ""
+        if loc:
+            candidates.append(loc)
+    except Exception:
+        pass
+    for c in candidates:
+        if isinstance(c, str) and c.lower().startswith("ru"):
+            return "ru"
+    return "en"
+
+
 def load_state() -> dict:
+    default_lang = _detect_default_lang()
     if not STATE_FILE.exists():
-        return {"lang": "ru"}
+        return {"lang": default_lang}
     try:
         data = json.loads(STATE_FILE.read_text(encoding="utf-8"))
         if not isinstance(data, dict):
             raise ValueError
         data.pop("last_action", None)
-        data.setdefault("lang", "ru")
+        data.setdefault("lang", default_lang)
         return data
     except Exception:
-        return {"lang": "ru"}
+        return {"lang": default_lang}
 
 
 def save_state(state: dict) -> None:
@@ -349,7 +370,7 @@ def save_state(state: dict) -> None:
 
 
 def tr(state: dict, key: str, **kwargs: Any) -> str:
-    lang = state.get("lang", "ru")
+    lang = state.get("lang", _detect_default_lang())
     return LANGS.get(lang, LANGS["ru"]).get(key, key).format(**kwargs)
 
 
@@ -1096,7 +1117,7 @@ def switch_language(state: dict) -> None:
         state,
         tr(state, "lang_switch"),
         [Choice(tr(state, "lang_ru"), "ru"), Choice(tr(state, "lang_en"), "en")],
-        default=state.get("lang", "ru"),
+        default=state.get("lang", _detect_default_lang()),
     )
     if lang in ("ru", "en"):
         state["lang"] = lang

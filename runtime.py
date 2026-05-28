@@ -90,6 +90,12 @@ def set_force_model(value: str) -> None:
     set("force_model", value or None)
 
 
+# Хардкод-дефолт: persona "zoapi-bridge" со ВСЕМИ серверными тулами Zo
+# отключенными (scopes=[]) — для аккаунтов, где она уже создана. Если у
+# юзера её нет, прокси падает в обычный режим без persona_id.
+DEFAULT_BRIDGE_PERSONA_ID = "fece34e2-7f85-496c-bee2-49ff052d8563"
+
+
 # --- персона для /ask (опционально) ---
 #
 # Если задана — все запросы прокси будут идти через эту персону. Полезно,
@@ -99,6 +105,11 @@ def set_force_model(value: str) -> None:
 # и модель будет вынуждена использовать тулы клиента.
 
 def get_persona_id() -> str:
+    """
+    Возвращает persona_id из runtime.json. Если не задано — возвращает
+    хардкод-дефолт DEFAULT_BRIDGE_PERSONA_ID (zoapi-bridge). Юзер может
+    переоп
+    """
     val = get("persona_id", "")
     return val if isinstance(val, str) else ""
 

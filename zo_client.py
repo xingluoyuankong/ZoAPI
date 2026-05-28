@@ -166,6 +166,85 @@ class ZoClient:
         _raise_for_status(r)
         return r.json().get("personas", [])
 
+    async def create_persona(
+        self,
+        account: Account,
+        name: str,
+        prompt: str,
+        scopes: list[str] | None = None,
+        image: str | None = None,
+    ) -> dict[str, Any]:
+        """POST /personas/ — create a new persona. Returns the created persona dict.
+
+        Body shape (captured fr
+        """
+        body = {"name": name, "prompt": prompt, "image": None, "scopes": scopes or []}
+        r = await self._get(account).post(
+            "/personas/",
+            json=body,
+            headers=_headers_for(account),
+            cookies=_cookies_for(account),
+        )
+        _raise_for_status(r)
+        return r.json()
+
+    async def update_persona_scopes(
+        self,
+        account: Account,
+        persona_id: str,
+        scopes: list[str],
+    ) -> bool:
+        """Пытается выставить persona.scopes через несколько вариантов
+        эндпоинтов (точный путь Zo не задокументирован).
+        """
+        for method in ("PATCH", "PUT", "POST"):
+            url = f"/personas/{persona_id}"
+            if method == "POST":
+                url += "/scopes"
+            r = await self._get(account).request(
+                method, url, json={"scopes": scopes}, headers=_headers_for(account), cookies=_cookies_for(account)
+            )
+            if r.status_code == 200:
+                return True
+        return False
+
+    async def ensure_bridge_persona(
+        self, account: Account, name: str, prompt: str
+    ) -> str | None:
+        """
+        Ищет персону по name в /personas/available. Если нет — создаёт
+        через POST /personas/ с scopes=[]. Затем (на всякий случай) дёргает
+        update_persona_scopes(scopes=[]) чтобы убедиться, что серверные
+        тулы Zo для неё точно отключены.
+
+        Возвращает persona_id или None при ошибке.
+        """
+        try:
+            personas = await self.list_personas(account)
+        except Exception as e:
+            log.warning("[%s] ensure_bridge_persona: list_personas failed: %s", account.label, e)
+            return None
+
+        pid: str | None = None
+        for p in personas:
+            if p.get("name") == name:
+                pid = p.get("id")
+                break
+
+        if not pid:
+            try:
+                p = await self.create_persona(account, name, prompt, scopes=[])
+                pid = p.get("id")
+            except Exception:
+                pass
+
+        if pid:
+            try:
+                await self.update_persona_scopes(account, pid, [])
+            except Exception:
+                pass
+        return pid
+
     async def list_conversations(self, account: Account) -> list[dict[str, Any]]:
         r = await self._get(account).get(
             "/conversations",

@@ -231,8 +231,16 @@ def _extract_client_tool_names(tools: list[dict[str, Any]] | None) -> list[str]:
     return names
 
 
-def _persona() -> str | None:
-    """Возвращает persona_id из runtime.json или None."""
+def _persona(acc: "Account | None" = None) -> str | None:
+    """Возвращает persona_id для запроса.
+
+    Приоритет:
+      1) acc.bridge_persona_id  — хардкод-персона ZoAPI Bridge на этом аккаунте
+      2) runtime.json persona_id — ручной override через TUI
+      3) None — пассивный режим (получишь полные серверные тулы Zo)
+    """
+    if acc is not None and getattr(acc, "bridge_persona_id", None):
+        return acc.bridge_persona_id
     try:
         pid = runtime.get_persona_id().strip() if hasattr(runtime, "get_persona_id") else ""
         return pid or None
@@ -761,6 +769,14 @@ async def lifespan(app: FastAPI):
 
 app = FastAPI(title="zo-claude-proxy", lifespan=lifespan)
 
+# /auth и /auth/save — браузерный фолбэк для добавления аккаунта когда
+# Playwright/Patchright недоступен (Docker, headless-окружения и т.п.).
+try:
+    import auth_setup
+    auth_setup.install(app, STORE, ZO)
+except Exception as e:  # noqa: BLE001
+    log.warning("auth_setup install failed: %s", e)
+
 
 @app.exception_handler(HTTPException)
 async def _http_exc(request: Request, exc: HTTPException) -> JSONResponse:
@@ -819,12 +835,16 @@ async def admin_set_active(req: Request) -> dict[str, Any]:
 
 @app.on_event("startup")
 async def _startup_warm_models() -> None:
+    import time as _time
+    import bridge_persona
+
+    # --- models cache ---
     try:
         await _refresh_available_models(force=True)
     except Exception as e:  # noqa: BLE001
         log.warning("startup model refresh failed: %s", e)
 
-    async def _periodic() -> None:
+    async def _models_loop() -> None:
         while True:
             await asyncio.sleep(_AVAILABLE_TTL)
             try:
@@ -832,7 +852,41 @@ async def _startup_warm_models() -> None:
             except Exception:
                 pass
 
-    asyncio.create_task(_periodic())
+    asyncio.create_task(_models_loop())
+
+    # --- bridge-persona bootstrap (одна персона "ZoAPI Bridge" на каждый
+    # Zo-аккаунт; scopes=[] — серверные тулы Zo физически отключены) ---
+    async def _persona_loop() -> None:
+        # первый прогон сразу, потом раз в 5 минут (новые аккаунты)
+        while True:
+            try:
+                await bridge_persona.bootstrap_all(ZO, STORE)
+            except Exception as e:  # noqa: BLE001
+                log.warning("bridge persona bootstrap failed: %s", e)
+            await asyncio.sleep(300)
+
+    asyncio.create_task(_persona_loop())
+
+    # --- balance polling каждые 60s по всем usable-аккаунтам ---
+    async def _balances_loop() -> None:
+        while True:
+            for acc in list(STORE.accounts):
+                if not acc.is_usable():
+                    continue
+                try:
+                    cents = await ZO.fetch_balance(acc)
+                    if cents is not None:
+                        acc.balance_cents = cents
+                        acc.balance_checked_at = _time.time()
+                except Exception:
+                    pass
+            try:
+                STORE.save()
+            except Exception:
+                pass
+            await asyncio.sleep(60)
+
+    asyncio.create_task(_balances_loop())
 
 # ------------------------- models -------------------------
 
@@ -899,6 +953,12 @@ async def messages(req: Request) -> Any:
     stream = bool(body.get("stream", False))
     client_tool_names = _extract_client_tool_names(tools)
 
+    # Anthropic extended-thinking: {"thinking": {"type": "enabled", "budget_tokens": N}}
+    thinking_cfg = body.get("thinking") or {}
+    enable_thinking = (
+        isinstance(thinking_cfg, dict) and thinking_cfg.get("type") == "enabled"
+    )
+
     if not msgs:
         raise HTTPException(status_code=400, detail="messages is empty")
 
@@ -919,7 +979,7 @@ async def messages(req: Request) -> Any:
 
     if stream:
         return StreamingResponse(
-            _do_stream(flat, zo_model, system, first_user, model_req or "claude", client_tool_names),
+            _do_stream(flat, zo_model, system, first_user, model_req or "claude", client_tool_names, enable_thinking),
             media_type="text/event-stream",
             headers={
                 "cache-control": "no-cache",
@@ -1083,7 +1143,7 @@ async def _do_responses_websocket(
             return
         attempts.append(acc.label)
         convo_key = _convo_key(acc.label, instructions, first_user)
-        convo_id = CONVO_CACHE.get(convo_key)
+        convo_id = None  # multi-user isolation: всегда свежий разговор
         try:
             async for ev_name, data, conv_header in ZO.ask_stream(
                 acc,
@@ -1091,14 +1151,14 @@ async def _do_responses_websocket(
                 model_name=zo_model,
                 conversation_id=convo_id,
                 expanded_paths=EXPANDED_PATHS,
-                persona_id=_persona(),
+                persona_id=_persona(acc),
             ):
                 if not started:
                     for payload in translator.start_events():
                         await ws.send_json(payload)
                     started = True
                 if conv_header:
-                    CONVO_CACHE[convo_key] = conv_header
+                    pass  # CONVO_CACHE disabled for multi-user isolation
                 for payload in translator.feed_events(ev_name, data):
                     await ws.send_json(payload)
             for payload in translator.finish_events():
@@ -1158,7 +1218,7 @@ async def _do_openai_chat_stream(
             return
         attempts.append(acc.label)
         convo_key = _convo_key(acc.label, system, first_user)
-        convo_id = CONVO_CACHE.get(convo_key)
+        convo_id = None  # multi-user isolation: всегда свежий разговор
         try:
             async for ev_name, data, conv_header in ZO.ask_stream(
                 acc,
@@ -1166,14 +1226,14 @@ async def _do_openai_chat_stream(
                 model_name=zo_model,
                 conversation_id=convo_id,
                 expanded_paths=EXPANDED_PATHS,
-                persona_id=_persona(),
+                persona_id=_persona(acc),
             ):
                 if not started:
                     for chunk in translator.start():
                         yield chunk.encode("utf-8")
                     started = True
                 if conv_header:
-                    CONVO_CACHE[convo_key] = conv_header
+                    pass  # CONVO_CACHE disabled for multi-user isolation
                 for chunk in translator.feed(ev_name, data):
                     yield chunk.encode("utf-8")
             for chunk in translator.finish():
@@ -1247,7 +1307,7 @@ async def _do_responses_stream(
             return
         attempts.append(acc.label)
         convo_key = _convo_key(acc.label, system, first_user)
-        convo_id = CONVO_CACHE.get(convo_key)
+        convo_id = None  # multi-user isolation: всегда свежий разговор
         try:
             async for ev_name, data, conv_header in ZO.ask_stream(
                 acc,
@@ -1255,14 +1315,14 @@ async def _do_responses_stream(
                 model_name=zo_model,
                 conversation_id=convo_id,
                 expanded_paths=EXPANDED_PATHS,
-                persona_id=_persona(),
+                persona_id=_persona(acc),
             ):
                 if not started:
                     for chunk in translator.start():
                         yield chunk.encode("utf-8")
                     started = True
                 if conv_header:
-                    CONVO_CACHE[convo_key] = conv_header
+                    pass  # CONVO_CACHE disabled for multi-user isolation
                 for chunk in translator.feed(ev_name, data):
                     yield chunk.encode("utf-8")
             for chunk in translator.finish():
@@ -1312,7 +1372,7 @@ async def _collect_text_response(
             raise HTTPException(status_code=502, detail=f"All accounts failed: {attempts}")
         attempts.append(acc.label)
         convo_key = _convo_key(acc.label, system, first_user)
-        convo_id = CONVO_CACHE.get(convo_key)
+        convo_id = None  # multi-user isolation: всегда свежий разговор
         try:
             text_acc: list[str] = []
             new_conv: str | None = None
@@ -1322,7 +1382,7 @@ async def _collect_text_response(
                 model_name=zo_model,
                 conversation_id=convo_id,
                 expanded_paths=EXPANDED_PATHS,
-                persona_id=_persona(),
+                persona_id=_persona(acc),
             ):
                 if conv_header and not new_conv:
                     new_conv = conv_header
@@ -1335,7 +1395,7 @@ async def _collect_text_response(
                     if part.get("part_kind") in ("text", "thinking"):
                         text_acc.append(part.get("content") or "")
             if new_conv:
-                CONVO_CACHE[convo_key] = new_conv
+                pass  # CONVO_CACHE disabled for multi-user isolation
             text = "".join(text_acc).strip() or "(empty response)"
             STORE.mark_ok(acc.label)
             return text
@@ -1382,8 +1442,9 @@ async def _do_stream(
     first_user: str,
     anthropic_model_name: str,
     client_tool_names: list[str] | None = None,
+    enable_thinking: bool = False,
 ) -> AsyncIterator[bytes]:
-    translator = AnthropicStreamTranslator(model=anthropic_model_name, client_tool_names=client_tool_names)
+    translator = AnthropicStreamTranslator(model=anthropic_model_name, client_tool_names=client_tool_names, enable_thinking=enable_thinking)
     # message_start пошлём только когда успешно получим хоть один event от Zo,
     # чтобы при ошибке мы могли отдать чистый error без message_start.
     started = False
@@ -1402,7 +1463,7 @@ async def _do_stream(
         attempts.append(acc.label)
 
         convo_key = _convo_key(acc.label, system, first_user)
-        convo_id = CONVO_CACHE.get(convo_key)
+        convo_id = None  # multi-user isolation: всегда свежий разговор
 
         try:
             async for ev_name, data, conv_header in ZO.ask_stream(
@@ -1411,14 +1472,14 @@ async def _do_stream(
                 model_name=zo_model,
                 conversation_id=convo_id,
                 expanded_paths=EXPANDED_PATHS,
-                persona_id=_persona(),
+                persona_id=_persona(acc),
             ):
                 if not started:
                     for chunk in translator.start():
                         yield chunk.encode("utf-8")
                     started = True
                 if conv_header:
-                    CONVO_CACHE[convo_key] = conv_header
+                    pass  # CONVO_CACHE disabled for multi-user isolation
                 for chunk in translator.feed(ev_name, data):
                     yield chunk.encode("utf-8")
 
@@ -1487,7 +1548,7 @@ async def _do_nonstream(
         attempts.append(acc.label)
 
         convo_key = _convo_key(acc.label, system, first_user)
-        convo_id = CONVO_CACHE.get(convo_key)
+        convo_id = None  # multi-user isolation: всегда свежий разговор
 
         try:
             text_acc: list[str] = []
@@ -1498,7 +1559,7 @@ async def _do_nonstream(
                 model_name=zo_model,
                 conversation_id=convo_id,
                 expanded_paths=EXPANDED_PATHS,
-                persona_id=_persona(),
+                persona_id=_persona(acc),
             ):
                 if conv_header and not new_conv:
                     new_conv = conv_header
@@ -1513,7 +1574,7 @@ async def _do_nonstream(
                         text_acc.append(part.get("content") or "")
 
             if new_conv:
-                CONVO_CACHE[convo_key] = new_conv
+                pass  # CONVO_CACHE disabled for multi-user isolation
 
             text = "".join(text_acc).strip()
             STORE.mark_ok(acc.label)

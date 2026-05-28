@@ -103,7 +103,6 @@ _REMAP_TABLE: dict[str, list[tuple[str, dict[str, str]]]] = {
     "edit_file": [
         ("Edit",       {"target_file": "file_path"}),
         ("edit",       {"target_file": "filePath"}),
-        ("EditFile",   {"target_file": "path"}),
     ],
     "list_directory": [
         ("LS",         {"path": "path"}),
@@ -141,6 +140,40 @@ _REMAP_TABLE: dict[str, list[tuple[str, dict[str, str]]]] = {
     "web_research": [
         ("WebSearch",  {"query": "query"}),
         ("websearch",  {"query": "query"}),
+    ],
+
+    # ---------------------------------------------------------------
+    # MultiEdit / NotebookEdit / Glob / TodoWrite / Task / ExitPlanMode
+    # Эти серверные Zo-имена сейчас не существуют — но если модель
+    # сгенерит что-то похожее, маппим на клиента.
+    # ---------------------------------------------------------------
+    "multi_edit": [
+        ("MultiEdit",  {"file_path": "file_path", "edits": "edits"}),
+        ("multiedit",  {"file_path": "filePath", "edits": "edits"}),
+    ],
+    "notebook_edit": [
+        ("NotebookEdit", {}),
+        ("notebookedit", {}),
+    ],
+    "glob_search": [
+        ("Glob",       {"query": "pattern", "include_pattern": "path"}),
+        ("glob",       {"query": "pattern"}),
+    ],
+    "spawn_agent": [
+        ("Task",       {"prompt": "prompt", "description": "description", "subagent_type": "subagent_type"}),
+        ("task",       {"prompt": "prompt", "description": "description"}),
+    ],
+    "todo_list": [
+        ("TodoWrite",  {"items": "todos", "todos": "todos"}),
+        ("todowrite",  {"items": "todos"}),
+    ],
+    "exit_plan_mode": [
+        ("ExitPlanMode", {"plan": "plan"}),
+        ("exitplanmode", {"plan": "plan"}),
+    ],
+    "apply_patch": [
+        ("apply_patch", {"patch": "patch", "input": "input"}),
+        ("ApplyPatch", {"patch": "patch"}),
     ],
 }
 
@@ -233,3 +266,21 @@ def stringify_args_for_streaming(args: dict[str, Any]) -> str:
         return json.dumps(args, ensure_ascii=False)
     except Exception:
         return "{}"
+
+
+# Common client-side tool names — for documentation / TUI / tests.
+# Used by callers that need to know what to advertise.
+COMMON_CLIENT_TOOL_NAMES = {
+    # Claude Code
+    "Bash", "BashOutput", "KillShell",
+    "Read", "Write", "Edit", "MultiEdit", "NotebookEdit",
+    "Glob", "Grep", "LS",
+    "WebFetch", "WebSearch",
+    "Task", "TodoWrite", "ExitPlanMode",
+    # OpenCode (lowercase)
+    "bash", "edit", "glob", "grep", "list", "multiedit", "patch",
+    "read", "todoread", "todowrite", "webfetch", "write",
+    "lsp_diagnostics",
+    # Codex / Hermes / generic
+    "shell", "exec", "apply_patch", "run_terminal_cmd",
+}

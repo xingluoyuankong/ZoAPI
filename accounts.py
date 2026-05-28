@@ -62,6 +62,13 @@ class Account:
     disabled: bool = False
     balance_cents: int | None = None
     balance_checked_at: float | None = None
+    # ID персоны zoapi-bridge на этом аккаунте. Создаётся автоматически
+    # при первом запуске и хранится тут, чтобы не пересоздавать каждый раз.
+    # Эта персона имеет scopes=[] — никаких серверных тулов Zo — и
+    # хардкод-промпт, который убивает Zo-идентичность и заставляет модель
+    # эмитить <zo:call> теги для тулов клиента.
+    bridge_persona_id: str | None = None
+    bridge_persona_checked_at: float | None = None
 
     # ------ JWT helpers ------
 
@@ -117,6 +124,8 @@ class Account:
             disabled=d.get("disabled", False),
             balance_cents=d.get("balance_cents"),
             balance_checked_at=d.get("balance_checked_at"),
+            bridge_persona_id=d.get("bridge_persona_id"),
+            bridge_persona_checked_at=d.get("bridge_persona_checked_at"),
         )
 
 
