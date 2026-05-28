@@ -7,7 +7,6 @@ import os
 import socket
 import subprocess
 import sys
-import tempfile
 import time
 import webbrowser
 from pathlib import Path
@@ -461,28 +460,53 @@ def add_account_via_browser(state: dict, store: AccountStore) -> None:
         pause(state)
         return
     captured: tuple[str, str, str] | None = None
-    with tempfile.TemporaryDirectory(prefix="zoapi-browser-") as tmp:
-        try:
-            with sync_playwright() as p:
-                browser = p.chromium.launch_persistent_context(user_data_dir=tmp, headless=False, viewport={"width": 1360, "height": 900})
-                page = browser.new_page()
-                page.goto("https://zo.computer", wait_until="domcontentloaded")
-                start = time.time()
-                while time.time() - start < 600:
-                    cookies = browser.cookies(["https://zo.computer", "https://api.zo.computer"])
-                    access = next((c.get("value", "") for c in cookies if c.get("name") == "access_token"), "")
-                    refresh = next((c.get("value", "") for c in cookies if c.get("name") == "refresh_token"), "")
-                    if access and refresh:
-                        captured = (access, refresh, clean_domain(extract_domain_from_access_token(access) or ""))
-                        break
-                    page.wait_for_timeout(900)
-                browser.close()
-        except PlaywrightTimeoutError:
-            pass
-        except Exception as e:
-            console.print(f"[#f4b7b7]{glyphs()['err']} {tr(state, 'auth_browser_fail')}: {e}[/#f4b7b7]")
-            pause(state)
-            return
+    login_url = "https://www.zo.computer/signup?intent=login"
+    cookie_urls = [
+        "https://www.zo.computer",
+        "https://zo.computer",
+        "https://api.zo.computer",
+        "https://auth.zo.computer",
+    ]
+    try:
+        with sync_playwright() as p:
+            browser = p.chromium.launch(
+                headless=False,
+                args=[
+                    "--no-first-run",
+                    "--no-default-browser-check",
+                    "--disable-dev-shm-usage",
+                    "--disable-features=Translate,MediaRouter,OptimizationHints",
+                ],
+            )
+            context = browser.new_context(
+                viewport={"width": 1280, "height": 860},
+                ignore_https_errors=True,
+            )
+            page = context.new_page()
+            try:
+                page.goto(login_url, wait_until="commit", timeout=60000)
+            except Exception:
+                pass
+            start = time.time()
+            while time.time() - start < 600:
+                try:
+                    cookies = context.cookies(cookie_urls)
+                except Exception:
+                    cookies = context.cookies()
+                access = next((c.get("value", "") for c in cookies if c.get("name") == "access_token"), "")
+                refresh = next((c.get("value", "") for c in cookies if c.get("name") == "refresh_token"), "")
+                if access and refresh:
+                    captured = (access, refresh, clean_domain(extract_domain_from_access_token(access) or ""))
+                    break
+                page.wait_for_timeout(500)
+            context.close()
+            browser.close()
+    except PlaywrightTimeoutError:
+        pass
+    except Exception as e:
+        console.print(f"[#f4b7b7]{glyphs()['err']} {tr(state, 'auth_browser_fail')}: {e}[/#f4b7b7]")
+        pause(state)
+        return
     if not captured:
         console.print(f"[#e9d8a6]{glyphs()['warn']} {tr(state, 'cookies_timeout')}[/#e9d8a6]")
         if prompt_confirm(state, tr(state, "manual_fallback"), False):
