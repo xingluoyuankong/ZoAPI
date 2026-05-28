@@ -106,9 +106,9 @@ LANGS = {
         "col_domain": "Domain",
         "col_ttl": "TTL",
         "col_state": "Статус",
-        "state_ok": "Активный",
-        "state_err": "Ошибка",
-        "state_off": "Неактивный",
+        "state_ok": "АКТИВЕН",
+        "state_err": "ОШИБКА",
+        "state_off": "НЕАКТИВЕН",
         "empty_accounts": "пока нет аккаунтов",
     },
     "en": {
@@ -177,9 +177,9 @@ LANGS = {
         "col_domain": "Domain",
         "col_ttl": "TTL",
         "col_state": "State",
-        "state_ok": "Active",
-        "state_err": "Error",
-        "state_off": "Inactive",
+        "state_ok": "ACTIVE",
+        "state_err": "ERROR",
+        "state_off": "INACTIVE",
         "empty_accounts": "no accounts yet",
     },
 }
@@ -213,8 +213,8 @@ def ui_style() -> questionary.Style:
         [
             ("qmark", "fg:#a78bfa bold"),
             ("question", "fg:#f5f3ff bold"),
-            ("answer", "fg:#e9d5ff bold"),
-            ("pointer", "fg:#c4b5fd bold"),
+            ("answer", "fg:#a78bfa bold"),
+            ("pointer", "fg:#8b5cf6 bold"),
             ("highlighted", "fg:#faf5ff bg:#5b4a73 bold"),
             ("selected", "fg:#ddd6fe bold"),
             ("instruction", "fg:#d8b4fe"),
@@ -384,10 +384,10 @@ def bottom_bar(state: dict, store: AccountStore, proxy_ok: bool) -> Panel:
     text = Text()
     text.append("API: ", style="bold #f5f3ff")
     text.append(tr(state, "proxy_on") if proxy_ok else tr(state, "proxy_off"), style="#b7e4c7" if proxy_ok else "#f4b7b7")
-    text.append(f"   {tr(state, 'accounts')}: {usable}/{total}", style="#e9d5ff")
-    text.append(f"   {tr(state, 'mode')}: {mode}", style="#e9d5ff")
-    text.append(f"   {tr(state, 'active')}: {active}", style="#e9d5ff")
-    text.append(f"   {tr(state, 'footer')}", style="#c4b5fd")
+    text.append(f"   {tr(state, 'accounts')}: {usable}/{total}", style="#a78bfa")
+    text.append(f"   {tr(state, 'mode')}: {mode}", style="#a78bfa")
+    text.append(f"   {tr(state, 'active')}: {active}", style="#a78bfa")
+    text.append(f"   {tr(state, 'footer')}", style="#8b5cf6")
     return Panel(text, border_style="#b8a7d9", padding=(0, 1))
 
 
