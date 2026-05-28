@@ -659,24 +659,34 @@ def add_account_via_browser(state: dict, store: AccountStore) -> None:
             add_account_manual(state, store)
         return
     access, refresh, domain_guess = captured
-    label = prompt_text(state, tr(state, "label"), f"acc{len(store.accounts)+1}") or f"acc{len(store.accounts)+1}"
-    domain = prompt_text(state, tr(state, "domain"), domain_guess) or domain_guess
-    if not domain:
-        return
-    acc = Account(label=label, domain=clean_domain(domain), access_token=access, refresh_token=refresh, added_at=dt.datetime.now(dt.timezone.utc).isoformat())
+    used = {a.label for a in store.accounts}
+    n = 1
+    while f"acc{n}" in used:
+        n += 1
+    label = f"acc{n}"
+    domain = clean_domain(domain_guess) or clean_domain(extract_domain_from_access_token(access) or "")
+    acc = Account(
+        label=label,
+        domain=domain,
+        access_token=access,
+        refresh_token=refresh,
+        added_at=dt.datetime.now(dt.timezone.utc).isoformat(),
+    )
+    store.add(acc, make_active=not store.accounts)
     console.print(f"[#b8a7d9]{glyphs()['run']} {tr(state, 'verify')}[/#b8a7d9]")
     try:
         balance, models = asyncio.run(fetch_account_health(acc))
+        acc.balance_cents = balance
+        acc.balance_checked_at = time.time()
+        store.save()
     except Exception as e:
+        balance, models = None, 0
         console.print(f"[#f4b7b7]{glyphs()['err']} {tr(state, 'verify_fail')}: {e}[/#f4b7b7]")
-        if prompt_confirm(state, tr(state, "save_anyway"), False):
-            store.add(acc, make_active=not store.accounts or prompt_confirm(state, tr(state, "make_active"), True))
-        pause(state)
-        return
-    acc.balance_cents = balance
-    acc.balance_checked_at = time.time()
-    store.add(acc, make_active=not store.accounts or prompt_confirm(state, tr(state, "make_active"), True))
-    console.print(Panel(f"{tr(state, 'saved')}\nLabel: {label}\nEmail: {acc.email() or '?'}\nDomain: {acc.domain}\n{tr(state, 'balance')}: {fmt_balance(balance)}\nModels: {models}", border_style="#b8a7d9"))
+    console.print(Panel(
+        f"{tr(state, 'saved')}\nLabel: {label}\nEmail: {acc.email() or '?'}\nDomain: {acc.domain}\n"
+        f"{tr(state, 'balance')}: {fmt_balance(balance)}\nModels: {models}",
+        border_style="#b8a7d9",
+    ))
     pause(state)
 
 
