@@ -1,17 +1,19 @@
 """
-utils/installers.py — автоматическая прописка ZoAPI в Codex / Claude Code.
+utils/installers.py — автоматическая прописка ZoAPI в Codex / Claude Code / OpenCode.
 
 Что делает:
 - Persistent env vars:
     * Windows: `setx NAME VALUE` (user scope) + текущий процесс.
     * macOS/Linux: блок `# >>> zoapi env >>> ... # <<< zoapi env <<<`
       в ~/.zshrc, ~/.bashrc, ~/.profile (идемпотентно, можно удалить).
-- Codex CLI: ~/.codex/config.toml с провайдером `zoapi`
-  (base_url = http://127.0.0.1:17878/v1, wire_api = responses).
+- Codex CLI: ~/.codex/config.toml — корневой ключ `model_provider = "zoapi"`
+  и таблица `[model_providers.zoapi]` с маркерами; чужие настройки не трогаем.
 - Claude Code: ~/.claude/settings.json с env-блоком
   (ANTHROPIC_BASE_URL, ANTHROPIC_AUTH_TOKEN, ANTHROPIC_API_KEY).
+- OpenCode: ~/.config/opencode/opencode.json — мержим только `provider.zoapi`,
+  остальные провайдеры и настройки сохраняются.
 
-Всё можно откатить (uninstall_codex / uninstall_claude).
+Всё можно откатить (uninstall_codex / uninstall_claude / uninstall_opencode).
 """
 
 from __future__ import annotations
@@ -37,6 +39,8 @@ ENV_MARKER_START = "# >>> zoapi env >>>"
 ENV_MARKER_END = "# <<< zoapi env <<<"
 TOML_MARKER_START = "# >>> zoapi provider >>>"
 TOML_MARKER_END = "# <<< zoapi provider <<<"
+TOML_TOP_START = "# >>> zoapi top >>>"
+TOML_TOP_END = "# <<< zoapi top <<<"
 
 
 def is_windows() -> bool:
@@ -239,9 +243,11 @@ def unset_env_vars(names: Iterable[str]) -> list[str]:
 CODEX_DIR = Path.home() / ".codex"
 CODEX_CONFIG = CODEX_DIR / "config.toml"
 
-CODEX_BLOCK = f"""{TOML_MARKER_START}
+CODEX_TOP_BLOCK = f"""{TOML_TOP_START}
 model_provider = "zoapi"
+{TOML_TOP_END}"""
 
+CODEX_SECTION_BLOCK = f"""{TOML_MARKER_START}
 [model_providers.zoapi]
 name = "ZoAPI"
 base_url = "{OPENAI_BASE}"
@@ -250,8 +256,26 @@ env_key = "OPENAI_API_KEY"
 {TOML_MARKER_END}"""
 
 
+def _strip_top_level_key(text: str, key: str) -> str:
+    """Удалить строки `<key> = ...`, встречающиеся ДО первой `[...]` секции."""
+    out: list[str] = []
+    seen_section = False
+    for line in text.splitlines():
+        stripped = line.lstrip()
+        if not seen_section and stripped.startswith("["):
+            seen_section = True
+        if not seen_section and re.match(rf"\s*{re.escape(key)}\s*=", line):
+            continue
+        out.append(line)
+    return "\n".join(out)
+
+
 def install_codex() -> list[str]:
-    """Прописать Codex CLI: env + ~/.codex/config.toml."""
+    """Прописать Codex CLI: env + ~/.codex/config.toml.
+
+    Корневой ключ `model_provider = "zoapi"` всегда оказывается в корне TOML
+    (вставляется до первой `[...]` секции), таблица провайдера — в конце файла.
+    """
     log = set_env_vars(
         {
             "OPENAI_API_KEY": DUMMY_KEY,
@@ -260,21 +284,31 @@ def install_codex() -> list[str]:
     )
     CODEX_DIR.mkdir(parents=True, exist_ok=True)
     existing = CODEX_CONFIG.read_text(encoding="utf-8") if CODEX_CONFIG.exists() else ""
-    cleaned = _strip_block(existing, TOML_MARKER_START, TOML_MARKER_END)
-    # Убрать любой свободно стоящий model_provider = ... вне нашего блока,
-    # чтобы он не перебивал наш.
-    cleaned_lines: list[str] = []
-    for line in cleaned.splitlines():
-        s = line.strip()
-        if s.startswith("model_provider") and "=" in s:
-            continue
-        cleaned_lines.append(line)
-    cleaned = "\n".join(cleaned_lines).rstrip()
 
-    if cleaned:
-        new = cleaned + "\n\n" + CODEX_BLOCK + "\n"
-    else:
-        new = CODEX_BLOCK + "\n"
+    # 1) убрать наши прошлые блоки
+    cleaned = _strip_block(existing, TOML_TOP_START, TOML_TOP_END)
+    cleaned = _strip_block(cleaned, TOML_MARKER_START, TOML_MARKER_END)
+    # 2) убрать любой свободно стоящий top-level `model_provider = ...`
+    cleaned = _strip_top_level_key(cleaned, "model_provider").rstrip()
+
+    # 3) вставить TOP-блок перед первой [...] секцией (или в начало, если её нет)
+    lines = cleaned.splitlines()
+    section_idx = next(
+        (i for i, l in enumerate(lines) if l.lstrip().startswith("[")),
+        len(lines),
+    )
+    head = "\n".join(lines[:section_idx]).rstrip()
+    tail = "\n".join(lines[section_idx:]).strip("\n")
+
+    pieces: list[str] = []
+    if head:
+        pieces.append(head)
+    pieces.append(CODEX_TOP_BLOCK)
+    if tail:
+        pieces.append(tail)
+    pieces.append(CODEX_SECTION_BLOCK)
+
+    new = "\n\n".join(pieces).rstrip() + "\n"
     CODEX_CONFIG.write_text(new, encoding="utf-8")
     log.append(f"wrote {CODEX_CONFIG}")
     return log
@@ -285,7 +319,8 @@ def uninstall_codex() -> list[str]:
     if CODEX_CONFIG.exists():
         try:
             existing = CODEX_CONFIG.read_text(encoding="utf-8")
-            cleaned = _strip_block(existing, TOML_MARKER_START, TOML_MARKER_END)
+            cleaned = _strip_block(existing, TOML_TOP_START, TOML_TOP_END)
+            cleaned = _strip_block(cleaned, TOML_MARKER_START, TOML_MARKER_END)
             if cleaned != existing:
                 CODEX_CONFIG.write_text(cleaned, encoding="utf-8")
                 log.append(f"cleaned {CODEX_CONFIG}")
@@ -370,16 +405,102 @@ def uninstall_claude() -> list[str]:
 
 
 # ---------------------------------------------------------------------------
+# OpenCode
+# ---------------------------------------------------------------------------
+
+OPENCODE_DIR = Path.home() / ".config" / "opencode"
+OPENCODE_CONFIG = OPENCODE_DIR / "opencode.json"
+
+OPENCODE_PROVIDER_KEY = "zoapi"
+OPENCODE_PROVIDER = {
+    "npm": "@ai-sdk/openai-compatible",
+    "name": "ZoAPI",
+    "options": {
+        "baseURL": OPENAI_BASE,
+        "apiKey": DUMMY_KEY,
+    },
+    "models": {
+        "gpt-5": {"name": "GPT-5"},
+        "gpt-5-codex": {"name": "GPT-5 Codex"},
+        "claude-opus-4-7": {"name": "Claude Opus 4.7"},
+        "claude-sonnet-4-5": {"name": "Claude Sonnet 4.5"},
+    },
+}
+
+
+def install_opencode() -> list[str]:
+    """Прописать OpenCode: добавить провайдера `zoapi` в opencode.json
+    БЕЗ удаления остальных провайдеров / настроек.
+    """
+    log: list[str] = []
+    OPENCODE_DIR.mkdir(parents=True, exist_ok=True)
+
+    data: dict = {}
+    if OPENCODE_CONFIG.exists():
+        try:
+            raw = OPENCODE_CONFIG.read_text(encoding="utf-8")
+            data = json.loads(raw) if raw.strip() else {}
+            if not isinstance(data, dict):
+                data = {}
+        except Exception as e:  # noqa: BLE001
+            log.append(f"warn: existing {OPENCODE_CONFIG} not valid JSON ({e}); will rewrite")
+            data = {}
+
+    # schema подставляем только если отсутствует — не перетираем чужой
+    data.setdefault("$schema", "https://opencode.ai/config.json")
+
+    provider = data.get("provider")
+    if not isinstance(provider, dict):
+        provider = {}
+    # МЕРЖ: правим только наш ключ, остальные провайдеры не трогаем
+    provider[OPENCODE_PROVIDER_KEY] = OPENCODE_PROVIDER
+    data["provider"] = provider
+
+    OPENCODE_CONFIG.write_text(
+        json.dumps(data, indent=2, ensure_ascii=False) + "\n",
+        encoding="utf-8",
+    )
+    log.append(f"wrote {OPENCODE_CONFIG} (provider.{OPENCODE_PROVIDER_KEY})")
+    return log
+
+
+def uninstall_opencode() -> list[str]:
+    log: list[str] = []
+    if not OPENCODE_CONFIG.exists():
+        return log
+    try:
+        raw = OPENCODE_CONFIG.read_text(encoding="utf-8")
+        data = json.loads(raw) if raw.strip() else {}
+        if not isinstance(data, dict):
+            return log
+        provider = data.get("provider")
+        if isinstance(provider, dict) and OPENCODE_PROVIDER_KEY in provider:
+            provider.pop(OPENCODE_PROVIDER_KEY, None)
+            if provider:
+                data["provider"] = provider
+            else:
+                data.pop("provider", None)
+            OPENCODE_CONFIG.write_text(
+                json.dumps(data, indent=2, ensure_ascii=False) + "\n",
+                encoding="utf-8",
+            )
+            log.append(f"removed provider.{OPENCODE_PROVIDER_KEY} from {OPENCODE_CONFIG}")
+    except Exception as e:  # noqa: BLE001
+        log.append(f"failed to clean {OPENCODE_CONFIG}: {e}")
+    return log
+
+
+# ---------------------------------------------------------------------------
 # Combined
 # ---------------------------------------------------------------------------
 
 
 def install_both() -> list[str]:
-    return install_codex() + install_claude()
+    return install_codex() + install_claude() + install_opencode()
 
 
 def uninstall_both() -> list[str]:
-    return uninstall_codex() + uninstall_claude()
+    return uninstall_codex() + uninstall_claude() + uninstall_opencode()
 
 
 def status() -> dict[str, dict[str, str | bool]]:
@@ -392,7 +513,7 @@ def status() -> dict[str, dict[str, str | bool]]:
     if CODEX_CONFIG.exists():
         try:
             txt = CODEX_CONFIG.read_text(encoding="utf-8")
-            codex_cfg_ok = TOML_MARKER_START in txt
+            codex_cfg_ok = TOML_MARKER_START in txt and TOML_TOP_START in txt
         except Exception:
             codex_cfg_ok = False
 
@@ -404,6 +525,15 @@ def status() -> dict[str, dict[str, str | bool]]:
             claude_cfg_ok = isinstance(env, dict) and env.get("ANTHROPIC_BASE_URL") == PROXY_URL
         except Exception:
             claude_cfg_ok = False
+
+    opencode_cfg_ok = False
+    if OPENCODE_CONFIG.exists():
+        try:
+            data = json.loads(OPENCODE_CONFIG.read_text(encoding="utf-8")) or {}
+            prov = (data.get("provider") or {}) if isinstance(data, dict) else {}
+            opencode_cfg_ok = isinstance(prov, dict) and OPENCODE_PROVIDER_KEY in prov
+        except Exception:
+            opencode_cfg_ok = False
 
     return {
         "codex": {
@@ -418,5 +548,9 @@ def status() -> dict[str, dict[str, str | bool]]:
             "ANTHROPIC_AUTH_TOKEN": has("ANTHROPIC_AUTH_TOKEN"),
             "ANTHROPIC_API_KEY": has("ANTHROPIC_API_KEY"),
             "config_path": str(CLAUDE_SETTINGS),
+        },
+        "opencode": {
+            "config": opencode_cfg_ok,
+            "config_path": str(OPENCODE_CONFIG),
         },
     }

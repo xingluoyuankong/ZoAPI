@@ -85,6 +85,8 @@ LANGS = {
         "install_log": "Что сделано",
         "status_codex": "Codex",
         "status_claude": "Claude Code",
+        "status_opencode": "OpenCode",
+        "install_opencode": "OpenCode (мержит провайдеров)",
         "status_env": "env",
         "status_config": "config-файл",
         "status_yes": "ок",
@@ -189,6 +191,8 @@ LANGS = {
         "install_log": "What changed",
         "status_codex": "Codex",
         "status_claude": "Claude Code",
+        "status_opencode": "OpenCode",
+        "install_opencode": "OpenCode (merge providers)",
         "status_env": "env",
         "status_config": "config file",
         "status_yes": "ok",
@@ -808,6 +812,7 @@ def _install_status_panel(state: dict) -> Panel:
 
     codex = st["codex"]
     claude = st["claude"]
+    opencode = st["opencode"]
     lines = [
         f"[bold]{tr(state, 'status_codex')}[/bold]",
         f"  {tr(state, 'status_config')}: {mark(codex['config'])}  ({codex['config_path']})",
@@ -816,6 +821,9 @@ def _install_status_panel(state: dict) -> Panel:
         f"[bold]{tr(state, 'status_claude')}[/bold]",
         f"  {tr(state, 'status_config')}: {mark(claude['config'])}  ({claude['config_path']})",
         f"  ANTHROPIC_BASE_URL: {mark(claude['ANTHROPIC_BASE_URL'])}    ANTHROPIC_AUTH_TOKEN: {mark(claude['ANTHROPIC_AUTH_TOKEN'])}",
+        "",
+        f"[bold]{tr(state, 'status_opencode')}[/bold]",
+        f"  {tr(state, 'status_config')}: {mark(opencode['config'])}  ({opencode['config_path']})",
     ]
     return Panel("\n".join(lines), title=tr(state, "install_status"), border_style="#b8a7d9", padding=(1, 2))
 
@@ -839,6 +847,7 @@ def install_clients_menu(state: dict) -> None:
                 Choice(tr(state, "install_both"), "both"),
                 Choice(tr(state, "install_codex"), "codex"),
                 Choice(tr(state, "install_claude"), "claude"),
+                Choice(tr(state, "install_opencode"), "opencode"),
                 Separator(),
                 Choice(tr(state, "uninstall_both"), "uninstall"),
                 Choice(tr(state, "back"), "back"),
@@ -853,6 +862,8 @@ def install_clients_menu(state: dict) -> None:
                 log = installers.install_codex()
             elif choice == "claude":
                 log = installers.install_claude()
+            elif choice == "opencode":
+                log = installers.install_opencode()
             elif choice == "uninstall":
                 log = installers.uninstall_both()
             else:
