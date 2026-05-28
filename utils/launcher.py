@@ -37,6 +37,7 @@ from rich.panel import Panel
 from rich.table import Table
 from rich.text import Text
 from zo_client import ZoClient
+from utils import installers
 
 STATE_FILE = ROOT / "launcher_state.json"
 LOG_FILE = ROOT / "proxy.log"
@@ -65,6 +66,29 @@ LANGS = {
         "docs": "Открыть документацию ZoAPI",
         "language": "Язык",
         "exit": "Выход",
+        "install_clients": "Подключить к Codex / Claude Code",
+        "install_title": "автоматическая прописка клиентов",
+        "install_body": (
+            "Пропишу прокси {proxy} в Codex / Claude Code:\n"
+            " • env-переменные (Windows: setx, *nix: ~/.zshrc / ~/.bashrc)\n"
+            " • ~/.codex/config.toml — провайдер zoapi\n"
+            " • ~/.claude/settings.json — env-блок\n\n"
+            "Терминалы, которые уже открыты, env не подхватят — открой новый."
+        ),
+        "install_choose": "Что прописать?",
+        "install_codex": "Codex (OpenAI-совместимый)",
+        "install_claude": "Claude Code (Anthropic)",
+        "install_both": "Оба сразу",
+        "install_status": "Текущий статус",
+        "uninstall_both": "Убрать всё (откат)",
+        "install_done": "Готово. Перезапусти Codex / Claude Code в новом терминале.",
+        "install_log": "Что сделано",
+        "status_codex": "Codex",
+        "status_claude": "Claude Code",
+        "status_env": "env",
+        "status_config": "config-файл",
+        "status_yes": "ок",
+        "status_no": "нет",
         "account_actions": "Действия с аккаунтами",
         "add_browser": "Добавить аккаунт через временный браузер",
         "switch_mode": "Переключить режим",
@@ -146,6 +170,29 @@ LANGS = {
         "docs": "Open ZoAPI docs",
         "language": "Language",
         "exit": "Exit",
+        "install_clients": "Wire up Codex / Claude Code",
+        "install_title": "auto-configure clients",
+        "install_body": (
+            "Will wire the proxy {proxy} into Codex / Claude Code:\n"
+            " • env vars (Windows: setx, *nix: ~/.zshrc / ~/.bashrc)\n"
+            " • ~/.codex/config.toml — zoapi provider\n"
+            " • ~/.claude/settings.json — env block\n\n"
+            "Already-open terminals won't see the new env — open a fresh one."
+        ),
+        "install_choose": "Pick a target",
+        "install_codex": "Codex (OpenAI-compatible)",
+        "install_claude": "Claude Code (Anthropic)",
+        "install_both": "Both at once",
+        "install_status": "Current status",
+        "uninstall_both": "Remove everything (rollback)",
+        "install_done": "Done. Restart Codex / Claude Code in a new terminal.",
+        "install_log": "What changed",
+        "status_codex": "Codex",
+        "status_claude": "Claude Code",
+        "status_env": "env",
+        "status_config": "config file",
+        "status_yes": "ok",
+        "status_no": "no",
         "account_actions": "Account actions",
         "add_browser": "Add account via temporary browser",
         "switch_mode": "Switch mode",
@@ -751,6 +798,72 @@ def show_setup_examples(state: dict) -> None:
     pause(state)
 
 
+def _install_status_panel(state: dict) -> Panel:
+    st = installers.status()
+    yes = tr(state, "status_yes")
+    no = tr(state, "status_no")
+
+    def mark(v: object) -> str:
+        return f"[#34d399]{yes}[/#34d399]" if v else f"[#fb7185]{no}[/#fb7185]"
+
+    codex = st["codex"]
+    claude = st["claude"]
+    lines = [
+        f"[bold]{tr(state, 'status_codex')}[/bold]",
+        f"  {tr(state, 'status_config')}: {mark(codex['config'])}  ({codex['config_path']})",
+        f"  OPENAI_API_KEY: {mark(codex['OPENAI_API_KEY'])}    OPENAI_BASE_URL: {mark(codex['OPENAI_BASE_URL'])}",
+        "",
+        f"[bold]{tr(state, 'status_claude')}[/bold]",
+        f"  {tr(state, 'status_config')}: {mark(claude['config'])}  ({claude['config_path']})",
+        f"  ANTHROPIC_BASE_URL: {mark(claude['ANTHROPIC_BASE_URL'])}    ANTHROPIC_AUTH_TOKEN: {mark(claude['ANTHROPIC_AUTH_TOKEN'])}",
+    ]
+    return Panel("\n".join(lines), title=tr(state, "install_status"), border_style="#b8a7d9", padding=(1, 2))
+
+
+def _show_install_log(state: dict, log: list[str]) -> None:
+    body = "\n".join(f"• {line}" for line in log) if log else "—"
+    console.print(Panel(body, title=tr(state, "install_log"), border_style="#34d399", padding=(1, 2)))
+    console.print(f"[#a8e6a3]{glyphs()['ok']} {tr(state, 'install_done')}[/#a8e6a3]")
+    pause(state)
+
+
+def install_clients_menu(state: dict) -> None:
+    while True:
+        console.clear()
+        console.print(Panel(tr(state, "install_body", proxy=PROXY_URL), title=tr(state, "install_title"), border_style="#b8a7d9", padding=(1, 2)))
+        console.print(_install_status_panel(state))
+        choice = select_menu(
+            state,
+            tr(state, "install_choose"),
+            [
+                Choice(tr(state, "install_both"), "both"),
+                Choice(tr(state, "install_codex"), "codex"),
+                Choice(tr(state, "install_claude"), "claude"),
+                Separator(),
+                Choice(tr(state, "uninstall_both"), "uninstall"),
+                Choice(tr(state, "back"), "back"),
+            ],
+        )
+        if choice in (None, "back"):
+            return
+        try:
+            if choice == "both":
+                log = installers.install_both()
+            elif choice == "codex":
+                log = installers.install_codex()
+            elif choice == "claude":
+                log = installers.install_claude()
+            elif choice == "uninstall":
+                log = installers.uninstall_both()
+            else:
+                continue
+        except Exception as e:  # noqa: BLE001
+            console.print(f"[#f4b7b7]{glyphs()['err']} {e}[/#f4b7b7]")
+            pause(state)
+            continue
+        _show_install_log(state, log)
+
+
 def open_docs(state: dict) -> None:
     webbrowser.open("https://github.com/UvenaliyS/ZoAPI/blob/main/docs.md")
     console.print(f"[#b8a7d9]{glyphs()['ok']} {tr(state, 'docs_opened')}[/#b8a7d9]")
@@ -842,6 +955,7 @@ def main() -> int:
                 Choice(tr(state, "restart_api"), "restart_api"),
                 Choice(tr(state, "show_log"), "show_log"),
                 Choice(tr(state, "setup_examples"), "setup"),
+                Choice(tr(state, "install_clients"), "install_clients"),
                 Choice(tr(state, "language"), "lang"),
                 Choice(tr(state, "docs"), "docs"),
                 Separator(),
@@ -862,6 +976,8 @@ def main() -> int:
             store.load()
         elif choice == "setup":
             show_setup_examples(state)
+        elif choice == "install_clients":
+            install_clients_menu(state)
         elif choice == "lang":
             switch_language(state)
         elif choice == "docs":

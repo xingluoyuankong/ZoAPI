@@ -73,10 +73,33 @@ run.bat
 Главное меню:
 - `Обновить статус`
 - `Аккаунты`
+- `Перезапустить локальный API`
+- `Показать лог локального API`
 - `Показать ручную настройку`
+- `Подключить к Codex / Claude Code`
 - `Язык`
 - `Открыть доки Zo API`
 - `Выход`
+
+---
+
+## Автоматическая настройка клиентов
+
+В меню `Подключить к Codex / Claude Code` лаунчер сам пропишет прокси:
+
+- **env-переменные** (persistent):
+  - Windows: `setx OPENAI_API_KEY zo-proxy`, `OPENAI_BASE_URL`, `ANTHROPIC_BASE_URL`, `ANTHROPIC_AUTH_TOKEN`, `ANTHROPIC_API_KEY` — user scope, переживает ребут.
+  - macOS / Linux: блок `# >>> zoapi env >>> ... # <<< zoapi env <<<` в `~/.zshrc` и/или `~/.bashrc` (идемпотентно, можно откатить одной кнопкой).
+- **Codex CLI**: `~/.codex/config.toml` с провайдером `zoapi` (`base_url = http://127.0.0.1:17878/v1`, `wire_api = "responses"`).
+- **Claude Code**: `~/.claude/settings.json` с `env`-блоком (`ANTHROPIC_BASE_URL`, `ANTHROPIC_AUTH_TOKEN`).
+
+Опции в меню:
+- `Оба сразу` — прописать и Codex, и Claude Code.
+- `Codex (OpenAI-совместимый)` — только Codex.
+- `Claude Code (Anthropic)` — только Claude Code.
+- `Убрать всё (откат)` — снести env-переменные и наши блоки из конфигов.
+
+Уже открытые терминалы новые env не подхватят — открой новое окно после установки.
 
 ---
 
