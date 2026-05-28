@@ -37,6 +37,7 @@ import uuid
 from typing import Any, AsyncIterator, Iterator
 
 from tool_parser import ToolCallTagParser
+from tool_bridge import is_zo_server_tool, remap_tool_name, remap_args, stringify_args_for_streaming
 
 
 def sse(event: str, data: dict[str, Any]) -> str:
@@ -52,7 +53,10 @@ class AnthropicStreamTranslator:
     Translator одного запроса.
 
     Использование:
-        t = AnthropicStreamTranslator(model="claude-opus-4-7")
+        t = AnthropicStreamTranslator(
+            model="claude-opus-4-7",
+            client_tool_names={"Bash", "Read", "Edit", ...},
+        )
         yield t.start()
         async for ev_name, ev_data, _ in zo_stream:
             for chunk in t.feed(ev_name, ev_data):
@@ -61,8 +65,13 @@ class AnthropicStreamTranslator:
             yield chunk
     """
 
-    def __init__(self, model: str = "claude-opus-4-7") -> None:
+    def __init__(
+        self,
+        model: str = "claude-opus-4-7",
+        client_tool_names: set[str] | list[str] | None = None,
+    ) -> None:
         self.model = model
+        self.client_tool_names: set[str] = set(client_tool_names or [])
         self.message_id = "msg_" + uuid.uuid4().hex[:24]
         self.started = False
         self.closed = False
@@ -74,6 +83,16 @@ class AnthropicStreamTranslator:
         self.tool_parser = ToolCallTagParser()
         self._tool_block_open = False
         self._emitted_tool_use = False
+
+        # Состояние для перехвата серверных Zo tool_call:
+        # когда модель напрямую вызывает 'bash'/'read_file'/etc., мы
+        # маппим имя на тул клиента и переименовываем аргументы. Аргументы
+        # приходят дельтами JSON, поэтому буферизуем до tool_close, потом
+        # одной дельтой отдаём клиенту в правильном формате.
+        self._zo_tool_active = False
+        self._zo_tool_name: str | None = None
+        self._zo_tool_rename: dict[str, str] = {}
+        self._zo_tool_arg_buf: list[str] = []
 
     def _handle_streamed_text(self, text: str) -> Iterator[str]:
         for kind, payload in self.tool_parser.feed(text):
@@ -281,12 +300,7 @@ class AnthropicStreamTranslator:
             elif kind in ("tool_call", "tool_use"):
                 tool_name = part.get("tool_name") or part.get("name") or "tool"
                 tool_id = part.get("tool_call_id") or part.get("id") or ""
-                yield from self._open_block("tool_use", tool_name=tool_name, tool_id=tool_id)
-                self._emitted_tool_use = True
-                args = part.get("args") or part.get("arguments")
-                if args is not None:
-                    partial = args if isinstance(args, str) else json.dumps(args, ensure_ascii=False)
-                    yield from self._delta_tool_input(partial)
+                yield from self._start_server_tool_call(tool_name, tool_id, part)
             else:
                 # неизвестный part_kind — игнорируем
                 pass
@@ -303,20 +317,28 @@ class AnthropicStreamTranslator:
                 yield from self._handle_streamed_text(text)
             elif dkind in ("tool_call", "tool_use", "args"):
                 partial = delta.get("args_delta") or delta.get("content_delta") or ""
-                if self.current_block_kind != "tool_use":
-                    yield from self._open_block("tool_use")
-                self._emitted_tool_use = True
-                if partial:
-                    if not isinstance(partial, str):
-                        partial = json.dumps(partial, ensure_ascii=False)
-                    yield from self._delta_tool_input(partial)
+                if self._zo_tool_active:
+                    # буферизуем — отдадим в _finish_server_tool_call с переименованием
+                    if partial:
+                        if not isinstance(partial, str):
+                            partial = json.dumps(partial, ensure_ascii=False)
+                        self._zo_tool_arg_buf.append(partial)
+                else:
+                    if self.current_block_kind != "tool_use":
+                        yield from self._open_block("tool_use")
+                    self._emitted_tool_use = True
+                    if partial:
+                        if not isinstance(partial, str):
+                            partial = json.dumps(partial, ensure_ascii=False)
+                        yield from self._delta_tool_input(partial)
             else:
                 pass
 
         elif ev_name == "PartEndEvent":
-            # не закрываем блок здесь — следующий Part может прийти,
-            # а если поток кончится — закроет finish().
-            pass
+            # Если был серверный Zo tool_call — финализируем его (буфер
+            # args собран, теперь переименуем и отправим клиенту).
+            if self._zo_tool_active:
+                yield from self._finish_server_tool_call()
 
         elif ev_name == "FinalResultEvent":
             # маркер финала pydantic_ai. Пропускаем — реальный конец будет
@@ -342,3 +364,66 @@ class AnthropicStreamTranslator:
         else:
             # неизвестное событие — лог не нужен, просто игнор
             pass
+
+    # ---------------- server-tool interception ----------------
+
+    def _start_server_tool_call(
+        self,
+        tool_name: str,
+        tool_id: str,
+        part: dict[str, Any],
+    ) -> Iterator[str]:
+        """
+        Zo прислал PartStartEvent с part_kind='tool_call'.
+
+        Если это серверный Zo-тул и у клиента есть эквивалент — маппим,
+        буферизуем args, и финализируем в _finish_server_tool_call.
+        Иначе работаем по старому: открываем tool_use с именем как есть.
+        """
+        if is_zo_server_tool(tool_name) and self.client_tool_names:
+            mapped = remap_tool_name(tool_name, self.client_tool_names)
+            if mapped is not None:
+                client_name, rename_map = mapped
+                self._zo_tool_active = True
+                self._zo_tool_name = tool_name
+                self._zo_tool_rename = rename_map
+                self._zo_tool_arg_buf = []
+                # initial args, если они уже в PartStartEvent
+                args = part.get("args") or part.get("arguments")
+                if args is not None:
+                    partial = args if isinstance(args, str) else json.dumps(args, ensure_ascii=False)
+                    self._zo_tool_arg_buf.append(partial)
+                # открываем tool_use блок С ИМЕНЕМ КЛИЕНТА
+                yield from self._open_block("tool_use", tool_name=client_name, tool_id=tool_id)
+                self._emitted_tool_use = True
+                return
+
+        # default path: открываем как есть
+        yield from self._open_block("tool_use", tool_name=tool_name, tool_id=tool_id)
+        self._emitted_tool_use = True
+        args = part.get("args") or part.get("arguments")
+        if args is not None:
+            partial = args if isinstance(args, str) else json.dumps(args, ensure_ascii=False)
+            yield from self._delta_tool_input(partial)
+
+    def _finish_server_tool_call(self) -> Iterator[str]:
+        """Финализирует перехваченный серверный tool_call: парсит буфер
+        args, переименовывает ключи и отдаёт клиенту одной input_json дельтой."""
+        if not self._zo_tool_active:
+            return
+        raw = "".join(self._zo_tool_arg_buf)
+        try:
+            args = json.loads(raw) if raw.strip() else {}
+            if not isinstance(args, dict):
+                args = {"_value": args}
+        except Exception:
+            args = {}
+        mapped_args = remap_args(self._zo_tool_name or "", args, self._zo_tool_rename)
+        partial = stringify_args_for_streaming(mapped_args)
+        yield from self._delta_tool_input(partial)
+
+        # сброс состояния
+        self._zo_tool_active = False
+        self._zo_tool_name = None
+        self._zo_tool_rename = {}
+        self._zo_tool_arg_buf = []

@@ -88,3 +88,20 @@ def get_force_model() -> str:
 
 def set_force_model(value: str) -> None:
     set("force_model", value or None)
+
+
+# --- персона для /ask (опционально) ---
+#
+# Если задана — все запросы прокси будут идти через эту персону. Полезно,
+# чтобы создать на Zo-аккаунте персону БЕЗ скоупов (chat-only, no tools) —
+# тогда серверный агент Zo не получит свои тулы и не сможет полезть в
+# /home/workspace. Останется только наш bridge-промпт с <zo:call> тегами,
+# и модель будет вынуждена использовать тулы клиента.
+
+def get_persona_id() -> str:
+    val = get("persona_id", "")
+    return val if isinstance(val, str) else ""
+
+
+def set_persona_id(value: str) -> None:
+    set("persona_id", value or None)

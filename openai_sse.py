@@ -18,6 +18,7 @@ import uuid
 from typing import Any, Generator
 
 from tool_parser import ToolCallTagParser
+from tool_bridge import is_zo_server_tool, remap_tool_name, remap_args, stringify_args_for_streaming
 
 
 # ---------------------------------------------------------------------------
@@ -42,10 +43,18 @@ class ChatCompletionsTranslator:
 
     Если модель эмитит `<zo:call ...>{...}</zo:call>` — конвертируется в
     `tool_calls` дельты + finish_reason="tool_calls".
+
+    Если Zo напрямую дёргает свой серверный тул (bash/read_file/etc.) —
+    маппим имя+аргументы на эквивалент клиента через tool_bridge.
     """
 
-    def __init__(self, model: str) -> None:
+    def __init__(
+        self,
+        model: str,
+        client_tool_names: set[str] | list[str] | None = None,
+    ) -> None:
         self.model = model
+        self.client_tool_names: set[str] = set(client_tool_names or [])
         self._id = "chatcmpl-" + uuid.uuid4().hex[:24]
         self._created = int(time.time())
         self._started = False
@@ -54,6 +63,14 @@ class ChatCompletionsTranslator:
         self._cur_tool_index: int = -1   # порядковый номер tool_call в этом ответе
         self._in_tool: bool = False
         self._emitted_tool: bool = False
+
+        # Перехват серверных Zo tool_call
+        self._zo_tool_active: bool = False
+        self._zo_tool_orig_name: str | None = None
+        self._zo_tool_rename: dict[str, str] = {}
+        self._zo_tool_arg_buf: list[str] = []
+        self._zo_tool_index: int = -1
+        self._zo_tool_call_id: str | None = None
 
     # --- helpers, шлющие сырые chunks ---
 
@@ -179,6 +196,11 @@ class ChatCompletionsTranslator:
                 # thinking рендерим как пустоту (OpenAI клиенты не ждут reasoning_content
                 # в @ai-sdk/openai-compatible)
                 return
+            elif kind in ("tool_call", "tool_use"):
+                tool_name = part.get("tool_name") or part.get("name") or "tool"
+                tool_id = part.get("tool_call_id") or part.get("id") or ("call_" + uuid.uuid4().hex[:24])
+                yield from self._intercept_server_tool_start(tool_name, tool_id, part)
+                return
         elif event_name == "PartDeltaEvent":
             delta = data.get("delta") or {}
             dkind = delta.get("part_delta_kind")
@@ -186,9 +208,71 @@ class ChatCompletionsTranslator:
                 text = delta.get("content_delta") or ""
             elif dkind == "thinking":
                 return
+            elif dkind in ("tool_call", "tool_use", "args"):
+                partial = delta.get("args_delta") or delta.get("content_delta") or ""
+                if not isinstance(partial, str):
+                    partial = json.dumps(partial, ensure_ascii=False)
+                if self._zo_tool_active and partial:
+                    self._zo_tool_arg_buf.append(partial)
+                return
+        elif event_name == "PartEndEvent":
+            if self._zo_tool_active:
+                yield from self._intercept_server_tool_end()
+            return
         if not text:
             return
         yield from self._consume_parser(self._parser.feed(text))
+
+    def _intercept_server_tool_start(
+        self,
+        tool_name: str,
+        tool_id: str,
+        part: dict[str, Any],
+    ) -> Generator[str, None, None]:
+        """Открыть tool_call для перехваченного серверного Zo-тула с маппингом имени."""
+        client_name = tool_name
+        rename_map: dict[str, str] = {}
+        if is_zo_server_tool(tool_name) and self.client_tool_names:
+            mapped = remap_tool_name(tool_name, self.client_tool_names)
+            if mapped is not None:
+                client_name, rename_map = mapped
+
+        self._cur_tool_index += 1
+        self._zo_tool_active = True
+        self._zo_tool_orig_name = tool_name
+        self._zo_tool_rename = rename_map
+        self._zo_tool_arg_buf = []
+        self._zo_tool_index = self._cur_tool_index
+        self._zo_tool_call_id = tool_id
+        self._emitted_tool = True
+
+        yield self._chunk_tool_open(self._cur_tool_index, tool_id, client_name)
+
+        # если args уже пришли в PartStartEvent
+        args = part.get("args") or part.get("arguments")
+        if args is not None:
+            partial = args if isinstance(args, str) else json.dumps(args, ensure_ascii=False)
+            self._zo_tool_arg_buf.append(partial)
+
+    def _intercept_server_tool_end(self) -> Generator[str, None, None]:
+        """Финализирует перехваченный серверный tool_call."""
+        if not self._zo_tool_active:
+            return
+        raw = "".join(self._zo_tool_arg_buf)
+        try:
+            args = json.loads(raw) if raw.strip() else {}
+            if not isinstance(args, dict):
+                args = {"_value": args}
+        except Exception:
+            args = {}
+        mapped_args = remap_args(self._zo_tool_orig_name or "", args, self._zo_tool_rename)
+        partial = stringify_args_for_streaming(mapped_args)
+        yield self._chunk_tool_args(self._zo_tool_index, partial)
+
+        self._zo_tool_active = False
+        self._zo_tool_orig_name = None
+        self._zo_tool_rename = {}
+        self._zo_tool_arg_buf = []
 
     def finish(self) -> Generator[str, None, None]:
         # дофлашить парсер (вдруг хвост остался)
@@ -276,13 +360,18 @@ class ResponsesApiTranslator:
     Принимает Zo SSE и выдаёт события OpenAI Responses API.
     Нужен для Codex CLI который звонит на /v1/responses.
 
-    Поддерживает `<zo:call>` теги: конвертируются в `function_call` items
-    с правильными `response.output_item.added` / `function_call_arguments.delta`
-    / `function_call_arguments.done` / `response.output_item.done` событиями.
+    Поддерживает `<zo:call>` теги: конвертируются в `function_call` items.
+    А также перехватывает серверные Zo tool_call (bash/read_file/...) и
+    маппит их на тулы клиента через tool_bridge.
     """
 
-    def __init__(self, model: str) -> None:
+    def __init__(
+        self,
+        model: str,
+        client_tool_names: set[str] | list[str] | None = None,
+    ) -> None:
         self.model = model
+        self.client_tool_names: set[str] = set(client_tool_names or [])
         self._resp_id = "resp-" + uuid.uuid4().hex[:24]
         self._text_item_id = "msg-" + uuid.uuid4().hex[:24]
         self._created = int(time.time())
@@ -305,6 +394,12 @@ class ResponsesApiTranslator:
         # Все эмитнутые items (для финального response.completed)
         self._finished_items: list[dict[str, Any]] = []
         self._emitted_tool_call: bool = False
+
+        # Перехват серверных Zo tool_call
+        self._zo_tool_active: bool = False
+        self._zo_tool_orig_name: str | None = None
+        self._zo_tool_rename: dict[str, str] = {}
+        self._zo_tool_arg_buf: list[str] = []
 
     def _ev(self, name: str, payload: dict[str, Any]) -> str:
         return _sse_line(name, payload)
@@ -518,13 +613,84 @@ class ResponsesApiTranslator:
             kind = part.get("part_kind")
             if kind == "text":
                 text = part.get("content") or ""
+            elif kind in ("tool_call", "tool_use"):
+                tool_name = part.get("tool_name") or part.get("name") or "tool"
+                tool_id = part.get("tool_call_id") or part.get("id") or ("call_" + uuid.uuid4().hex[:24])
+                return self._intercept_server_tool_start(tool_name, tool_id, part)
         elif event_name == "PartDeltaEvent":
             delta = data.get("delta") or {}
-            if delta.get("part_delta_kind") == "text":
+            dkind = delta.get("part_delta_kind")
+            if dkind == "text":
                 text = delta.get("content_delta") or ""
+            elif dkind in ("tool_call", "tool_use", "args"):
+                partial = delta.get("args_delta") or delta.get("content_delta") or ""
+                if not isinstance(partial, str):
+                    partial = json.dumps(partial, ensure_ascii=False)
+                if self._zo_tool_active and partial:
+                    self._zo_tool_arg_buf.append(partial)
+                return []
+        elif event_name == "PartEndEvent":
+            if self._zo_tool_active:
+                return self._intercept_server_tool_end()
+            return []
         if not text:
             return []
         return self._consume_parser(self._parser.feed(text))
+
+    def _intercept_server_tool_start(
+        self,
+        tool_name: str,
+        tool_id: str,
+        part: dict[str, Any],
+    ) -> list[dict[str, Any]]:
+        """Открыть function_call item с маппингом серверного Zo-тула на клиентский."""
+        client_name = tool_name
+        rename_map: dict[str, str] = {}
+        if is_zo_server_tool(tool_name) and self.client_tool_names:
+            mapped = remap_tool_name(tool_name, self.client_tool_names)
+            if mapped is not None:
+                client_name, rename_map = mapped
+
+        out: list[dict[str, Any]] = []
+        # закрыть текущий text если есть
+        if self._text_item_opened and not self._text_item_done:
+            out.extend(self._close_text_item())
+        # закрыть предыдущий tool если был
+        if self._cur_tool_item_id is not None:
+            out.extend(self._close_tool_item())
+
+        out.extend(self._open_tool_item(tool_id, client_name))
+
+        self._zo_tool_active = True
+        self._zo_tool_orig_name = tool_name
+        self._zo_tool_rename = rename_map
+        self._zo_tool_arg_buf = []
+
+        args = part.get("args") or part.get("arguments")
+        if args is not None:
+            partial = args if isinstance(args, str) else json.dumps(args, ensure_ascii=False)
+            self._zo_tool_arg_buf.append(partial)
+        return out
+
+    def _intercept_server_tool_end(self) -> list[dict[str, Any]]:
+        if not self._zo_tool_active:
+            return []
+        raw = "".join(self._zo_tool_arg_buf)
+        try:
+            args = json.loads(raw) if raw.strip() else {}
+            if not isinstance(args, dict):
+                args = {"_value": args}
+        except Exception:
+            args = {}
+        mapped_args = remap_args(self._zo_tool_orig_name or "", args, self._zo_tool_rename)
+        partial = stringify_args_for_streaming(mapped_args)
+        out = self._tool_args_delta(partial)
+
+        self._zo_tool_active = False
+        self._zo_tool_orig_name = None
+        self._zo_tool_rename = {}
+        self._zo_tool_arg_buf = []
+        return out
 
     def feed(self, event_name: str, data: dict[str, Any]) -> Generator[str, None, None]:
         for payload in self.feed_events(event_name, data):
