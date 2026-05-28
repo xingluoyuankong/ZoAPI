@@ -13,11 +13,13 @@ echo  Первичная установка окружения
 echo.
 
 set "PYTHON_EXE="
+
 where py >nul 2>nul
 if not errorlevel 1 (
   py -3 -c "import sys" >nul 2>nul
   if not errorlevel 1 set "PYTHON_EXE=py -3"
 )
+
 if "%PYTHON_EXE%"=="" (
   where python >nul 2>nul
   if not errorlevel 1 (
@@ -87,7 +89,6 @@ if errorlevel 1 (
 
 echo [+] Ставлю браузер Chromium для Playwright...
 "%VPY%" -m playwright install chromium
-"%VPY%" -m patchright install chromium >nul 2>nul
 if errorlevel 1 (
   echo [!] Не удалось установить Chromium для Playwright.
   echo.
@@ -95,9 +96,14 @@ if errorlevel 1 (
   exit /b 1
 )
 
+echo [+] Ставлю браузер Chromium для patchright...
+"%VPY%" -m patchright install chromium
+if errorlevel 1 (
+  echo [!] Не удалось установить Chromium для patchright. Продолжаю.
+)
+
 echo.
 echo [+] Готово. Сейчас запущу ZoAPI...
 echo.
 call run.bat
-set "EXITCODE=%ERRORLEVEL%"
-exit /b %EXITCODE%
+exit /b %ERRORLEVEL%
