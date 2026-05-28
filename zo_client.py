@@ -23,6 +23,11 @@ from typing import Any, AsyncIterator
 
 import httpx
 
+try:
+    from utils import proxies as _proxies  # type: ignore
+except Exception:  # noqa: BLE001
+    _proxies = None  # type: ignore[assignment]
+
 from accounts import Account
 
 log = logging.getLogger("zo-proxy.client")
@@ -99,24 +104,52 @@ class ZoClient:
         timeout_read: float = 900.0,
     ) -> None:
         self.base_url = base_url.rstrip("/")
-        self._client = httpx.AsyncClient(
+        self._timeout = httpx.Timeout(
+            connect=timeout_connect,
+            read=timeout_read,
+            write=60.0,
+            pool=30.0,
+        )
+        self._clients: dict[str | None, httpx.AsyncClient] = {}
+
+    def _proxy_for(self, account: "Account | None") -> str | None:
+        if _proxies is None:
+            return None
+        try:
+            label = getattr(account, "label", None)
+            return _proxies.pick_for_account(label)
+        except Exception:
+            return None
+
+    def _get(self, account: "Account | None") -> httpx.AsyncClient:
+        proxy = self._proxy_for(account)
+        client = self._clients.get(proxy)
+        if client is not None:
+            return client
+        kwargs: dict[str, Any] = dict(
             base_url=self.base_url,
-            timeout=httpx.Timeout(
-                connect=timeout_connect,
-                read=timeout_read,
-                write=60.0,
-                pool=30.0,
-            ),
+            timeout=self._timeout,
             follow_redirects=False,
         )
+        if proxy:
+            kwargs["proxy"] = proxy
+        client = httpx.AsyncClient(**kwargs)
+        self._clients[proxy] = client
+        return client
 
     async def close(self) -> None:
-        await self._client.aclose()
+        clients = list(self._clients.values())
+        self._clients.clear()
+        for c in clients:
+            try:
+                await c.aclose()
+            except Exception:
+                pass
 
     # ------------------------- non-stream helpers -------------------------
 
     async def list_models(self, account: Account) -> list[dict[str, Any]]:
-        r = await self._client.get(
+        r = await self._get(account).get(
             "/models/available",
             headers=_headers_for(account),
             cookies=_cookies_for(account),
@@ -125,7 +158,7 @@ class ZoClient:
         return r.json().get("models", [])
 
     async def list_personas(self, account: Account) -> list[dict[str, Any]]:
-        r = await self._client.get(
+        r = await self._get(account).get(
             "/personas/available",
             headers=_headers_for(account),
             cookies=_cookies_for(account),
@@ -134,7 +167,7 @@ class ZoClient:
         return r.json().get("personas", [])
 
     async def list_conversations(self, account: Account) -> list[dict[str, Any]]:
-        r = await self._client.get(
+        r = await self._get(account).get(
             "/conversations",
             headers=_headers_for(account),
             cookies=_cookies_for(account),
@@ -156,7 +189,7 @@ class ZoClient:
     async def fetch_balance(self, account: Account) -> int | None:
         """Возвращает суммарный available баланс в центах или None при ошибке."""
         try:
-            r = await self._client.get(
+            r = await self._get(account).get(
                 "/billing/credit-grants?testmode=false",
                 headers=_headers_for(account),
                 cookies=_cookies_for(account),
@@ -211,7 +244,7 @@ class ZoClient:
 
         idempotency = str(uuid.uuid4())
 
-        async with self._client.stream(
+        async with self._get(account).stream(
             "POST",
             "/ask",
             json=body,

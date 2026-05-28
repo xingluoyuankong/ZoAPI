@@ -38,6 +38,7 @@ from rich.table import Table
 from rich.text import Text
 from zo_client import ZoClient
 from utils import installers
+from utils import proxies as _proxies_module
 
 STATE_FILE = ROOT / "launcher_state.json"
 LOG_FILE = ROOT / "proxy.log"
@@ -50,9 +51,9 @@ console = Console(highlight=False)
 LANGS = {
     "ru": {
         "app_name": "ZoAPI",
-        "subtitle": "локальный api для Zo Computer",
-        "starting": "запуск локального api",
-        "running": "локальный api запущен",
+        "subtitle": "Локальный API для Zo Computer",
+        "starting": "API запускается",
+        "running": "API запущен",
         "proxy_start": "Запускаю локальный API...",
         "proxy_on": "Онлайн",
         "proxy_off": "Офлайн",
@@ -63,7 +64,7 @@ LANGS = {
         "refresh": "Обновить статус",
         "accounts_menu": "Аккаунты",
         "setup_examples": "Ручная настройка",
-        "docs": "Открыть документацию ZoAPI",
+        "docs": "Открыть документацию по установке",
         "language": "Язык",
         "exit": "Выход",
         "install_clients": "Подключить к Codex / Claude Code",
@@ -135,7 +136,7 @@ LANGS = {
         "refreshing": "Обновляю статус аккаунтов...",
         "manual_setup_title": "как подключить приложения вручную",
         "manual_setup": "OpenAI-compatible приложения:\n  Base URL: {api}\n  API key:  zo-proxy\n\nAnthropic-compatible приложения:\n  Base URL: {proxy}\n  API key / token: zo-proxy\n  endpoint: /v1/messages",
-        "docs_opened": "Документация ZoAPI открыта в браузере.",
+        "docs_opened": "Документация по установке открыта в браузере.",
         "footer": "Стрелки: выбор • Enter: открыть • Локальный API работает, пока открыто это окно",
         "press_enter": "Нажми Enter, чтобы продолжить...",
         "lang_switch": "Сменить язык",
@@ -153,6 +154,25 @@ LANGS = {
         "state_err": "Ошибка",
         "state_off": "Неактивен",
         "empty_accounts": "пока нет аккаунтов",
+        "proxies_menu": "Прокси",
+        "proxies_title": "управление прокси",
+        "proxies_enable": "Включить",
+        "proxies_disable": "Выключить",
+        "proxies_status_on": "включены",
+        "proxies_status_off": "выключены",
+        "proxies_check": "Проверить прокси",
+        "proxies_download": "Загрузить бесплатные прокси",
+        "proxies_back": "Назад",
+        "proxies_total": "всего",
+        "proxies_alive": "живых",
+        "proxies_checking": "проверяю {done}/{total}...",
+        "proxies_check_done": "Проверено: {alive} живых из {total} (≤ {ms} мс).",
+        "proxies_dl_done": "Загружено: всего {total} (новых {added}), источников ок: {sources_ok}.",
+        "proxies_no_file": "Файл не найден",
+        "proxies_no_items": "Нет прокси",
+        "proxies_file": "Файл прокси",
+        "support_author": "Поддержать автора",
+        "support_opened": "Открыл страницу поддержки в браузере.",
     },
     "en": {
         "app_name": "ZoAPI",
@@ -169,7 +189,7 @@ LANGS = {
         "refresh": "Refresh status",
         "accounts_menu": "Accounts",
         "setup_examples": "Manual setup",
-        "docs": "Open ZoAPI docs",
+        "docs": "Open install guide",
         "language": "Language",
         "exit": "Exit",
         "install_clients": "Wire up Codex / Claude Code",
@@ -239,7 +259,7 @@ LANGS = {
         "refreshing": "Refreshing account status...",
         "manual_setup_title": "manual client setup",
         "manual_setup": "OpenAI-compatible apps:\n  Base URL: {api}\n  API key:  zo-proxy\n\nAnthropic-compatible apps:\n  Base URL: {proxy}\n  API key / token: zo-proxy\n  endpoint: /v1/messages",
-        "docs_opened": "ZoAPI docs opened in browser.",
+        "docs_opened": "Install guide opened in browser.",
         "footer": "Arrows: move • Enter: open • Local API stays up while this window is open",
         "press_enter": "Press Enter to continue...",
         "lang_switch": "Switch language",
@@ -257,22 +277,41 @@ LANGS = {
         "state_err": "Error",
         "state_off": "Inactive",
         "empty_accounts": "no accounts yet",
+        "proxies_menu": "proxies",
+        "proxies_title": "proxy management",
+        "proxies_enable": "enable",
+        "proxies_disable": "disable",
+        "proxies_status_on": "enabled",
+        "proxies_status_off": "disabled",
+        "proxies_check": "check proxies",
+        "proxies_download": "download free proxies",
+        "proxies_back": "back",
+        "proxies_total": "total",
+        "proxies_alive": "alive",
+        "proxies_checking": "checking {done}/{total}...",
+        "proxies_check_done": "checked: {alive} alive out of {total} (≤ {ms} ms).",
+        "proxies_dl_done": "downloaded: total {total} (new {added}), sources ok: {sources_ok}.",
+        "proxies_no_file": "file not found",
+        "proxies_no_items": "no proxies",
+        "proxies_file": "proxy file",
+        "support_author": "support author",
+        "support_opened": "opened support page in browser.",
     },
 }
 
 
 def load_state() -> dict:
     if not STATE_FILE.exists():
-        return {"last_action": "refresh", "lang": "ru"}
+        return {"lang": "ru"}
     try:
         data = json.loads(STATE_FILE.read_text(encoding="utf-8"))
         if not isinstance(data, dict):
             raise ValueError
-        data.setdefault("last_action", "refresh")
+        data.pop("last_action", None)
         data.setdefault("lang", "ru")
         return data
     except Exception:
-        return {"last_action": "refresh", "lang": "ru"}
+        return {"lang": "ru"}
 
 
 def save_state(state: dict) -> None:
@@ -875,8 +914,83 @@ def install_clients_menu(state: dict) -> None:
         _show_install_log(state, log)
 
 
+def proxies_menu(state: dict) -> None:
+    while True:
+        console.clear()
+        st = _proxies_module.load_state()
+        enabled = bool(st.get("enabled"))
+        total = len(_proxies_module.load_proxies())
+        alive = len(_proxies_module.alive_proxies())
+        status_text = tr(state, "proxies_status_on") if enabled else tr(state, "proxies_status_off")
+        status_style = "#34d399" if enabled else "#fbbf24"
+        info = (
+            f"[{status_style}]{status_text}[/{status_style}]\n"
+            f"{tr(state, 'proxies_total')}: {total}    {tr(state, 'proxies_alive')}: {alive}\n"
+            f"{tr(state, 'proxies_file')}: {_proxies_module.PROXIES_FILE}"
+        )
+        console.print(Panel(info, title=tr(state, "proxies_title"), border_style="#b8a7d9", padding=(1, 2)))
+        toggle_label = tr(state, "proxies_disable") if enabled else tr(state, "proxies_enable")
+        choice = select_menu(
+            state,
+            tr(state, "actions"),
+            [
+                Choice(toggle_label, "toggle"),
+                Choice(tr(state, "proxies_check"), "check"),
+                Choice(tr(state, "proxies_download"), "download"),
+                Separator(),
+                Choice(tr(state, "proxies_back"), "back"),
+            ],
+        )
+        if choice in (None, "back"):
+            return
+        if choice == "toggle":
+            _proxies_module.toggle_enabled()
+        elif choice == "check":
+            from rich.live import Live
+            from rich.text import Text as RichText
+
+            with Live(RichText(tr(state, "proxies_checking", done=0, total=max(1, total))), console=console, refresh_per_second=8) as live:
+                def on_progress(done: int, total_: int) -> None:
+                    live.update(RichText(tr(state, "proxies_checking", done=done, total=total_)))
+
+                res = _proxies_module.check_and_store(timeout=2.0, on_progress=on_progress)
+            console.print(
+                f"[#34d399]{glyphs()['ok']} "
+                + tr(
+                    state,
+                    "proxies_check_done",
+                    alive=res["alive"],
+                    total=res["total"],
+                    ms=int(2000),
+                )
+                + "[/#34d399]"
+            )
+            pause(state)
+        elif choice == "download":
+            console.print(f"[#b8a7d9]{glyphs()['run']} ...[/#b8a7d9]")
+            res = _proxies_module.download_free(append=True)
+            console.print(
+                f"[#34d399]{glyphs()['ok']} "
+                + tr(
+                    state,
+                    "proxies_dl_done",
+                    total=res["total"],
+                    added=res["added"],
+                    sources_ok=res["sources_ok"],
+                )
+                + "[/#34d399]"
+            )
+            pause(state)
+
+
+def open_support(state: dict) -> None:
+    webbrowser.open("http://t.me/send?start=IVO5fcnt9PXb")
+    console.print(f"[#b8a7d9]{glyphs()['ok']} {tr(state, 'support_opened')}[/#b8a7d9]")
+    pause(state)
+
+
 def open_docs(state: dict) -> None:
-    webbrowser.open("https://github.com/UvenaliyS/ZoAPI/blob/main/docs.md")
+    webbrowser.open("https://github.com/UvenaliyS/ZoAPI/blob/main/README.md#установка")
     console.print(f"[#b8a7d9]{glyphs()['ok']} {tr(state, 'docs_opened')}[/#b8a7d9]")
     pause(state)
 
@@ -967,16 +1081,16 @@ def main() -> int:
                 Choice(tr(state, "show_log"), "show_log"),
                 Choice(tr(state, "setup_examples"), "setup"),
                 Choice(tr(state, "install_clients"), "install_clients"),
+                Choice(tr(state, "proxies_menu"), "proxies"),
                 Choice(tr(state, "language"), "lang"),
                 Choice(tr(state, "docs"), "docs"),
                 Separator(),
+                Choice(tr(state, "support_author"), "support"),
                 Choice(tr(state, "exit"), "exit"),
             ],
-            default=state.get("last_action", "refresh"),
         )
         if choice in (None, "exit"):
             return 0
-        state["last_action"] = choice
         save_state(state)
         if choice == "refresh":
             console.print(f"[#b8a7d9]{glyphs()['run']} {tr(state, 'refreshing')}[/#b8a7d9]")
@@ -989,6 +1103,10 @@ def main() -> int:
             show_setup_examples(state)
         elif choice == "install_clients":
             install_clients_menu(state)
+        elif choice == "proxies":
+            proxies_menu(state)
+        elif choice == "support":
+            open_support(state)
         elif choice == "lang":
             switch_language(state)
         elif choice == "docs":

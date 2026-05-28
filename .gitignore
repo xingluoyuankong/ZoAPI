@@ -11,3 +11,6 @@ __pycache__/
 .idea/
 .vscode/
 *.log
+
+proxies.txt
+proxies_state.json
