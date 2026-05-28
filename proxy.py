@@ -1201,16 +1201,17 @@ async def _do_nonstream(
 
 def _print_startup_banner() -> None:
     print()
-    print("  zo-claude-proxy")
-    print("  ===============")
+    print("  ZoAPI proxy")
+    print("  ==========")
     if not STORE.accounts:
         print()
-        print("  Аккаунтов нет. Запусти setup.py и добавь первый аккаунт:")
-        print("    python setup.py")
+        print("  Аккаунтов пока нет.")
+        print("  API всё равно поднимается и будет ждать добавления аккаунта.")
+        print(f"  → порт: {PROXY_PORT}")
         print()
         return
-    from setup import render_table
     print()
+    from setup import render_table
     print(render_table(STORE))
     a = _pick_account()
     if a:
@@ -1225,11 +1226,6 @@ if __name__ == "__main__":
     import uvicorn
 
     _print_startup_banner()
-    if not STORE.accounts:
-        print(
-            "Нет аккаунтов. Запусти лончер: run.bat (Windows) или ./run.sh (mac/linux)."
-        )
-        sys.exit(1)
 
     uvicorn.run(
         "proxy:app",

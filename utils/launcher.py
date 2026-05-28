@@ -109,6 +109,7 @@ LANGS = {
         "no": "Нет",
         "app_name": "ZoAPI",
         "subtitle": "локальный api для Zo Computer",
+        "balance": "Баланс",
     },
     "en": {
         "boot": "booting",
@@ -180,6 +181,7 @@ LANGS = {
         "no": "No",
         "app_name": "ZoAPI",
         "subtitle": "local api for Zo Computer",
+        "balance": "Balance",
     },
 }
 
@@ -210,14 +212,14 @@ def tr(state: dict, key: str, **kwargs: Any) -> str:
 def ui_style() -> questionary.Style:
     return questionary.Style(
         [
-            ("qmark", "fg:#6ee7b7 bold"),
-            ("question", "bold fg:#ecfdf5"),
-            ("answer", "fg:#86efac bold"),
-            ("pointer", "fg:#22c55e bold"),
-            ("highlighted", "fg:#ecfdf5 bg:#14532d bold"),
-            ("selected", "fg:#86efac bold"),
-            ("instruction", "fg:#a7f3d0"),
-            ("separator", "fg:#4ade80"),
+            ("qmark", "fg:#94a3b8 bold"),
+            ("question", "bold fg:#f0fdf4"),
+            ("answer", "fg:#bbf7d0 bold"),
+            ("pointer", "fg:#86efac bold"),
+            ("highlighted", "fg:#f0fdf4 bg:#365314 bold"),
+            ("selected", "fg:#d9f99d bold"),
+            ("instruction", "fg:#d1fae5"),
+            ("separator", "fg:#86efac"),
             ("disabled", "fg:#6b7280 italic"),
         ]
     )
@@ -325,7 +327,7 @@ def accounts_table(state: dict, store: AccountStore) -> Table:
     table.add_column("email", style="white", min_width=20)
     table.add_column("domain", style="bright_green", min_width=12)
     table.add_column("ttl", style="yellow", width=7)
-    table.add_column("bal", style="white", width=10, justify="right")
+    table.add_column(tr(state, "balance"), style="white", width=10, justify="right")
     table.add_column("state", style="white", width=10)
     if not store.accounts:
         table.add_row("", "—", tr(state, "empty_accounts"), "—", "—", "—", "—")
@@ -333,7 +335,7 @@ def accounts_table(state: dict, store: AccountStore) -> Table:
     for acc in store.accounts:
         marker = glyphs()["dot"] if acc.label == store.active_label else ""
         status = tr(state, "state_off") if acc.disabled else (tr(state, "state_err") if acc.error_streak else tr(state, "state_ok"))
-        bal = "?" if acc.balance_cents is None else f"{acc.balance_cents}¢"
+        bal = "?" if acc.balance_cents is None else f"${acc.balance_cents / 100:.2f}"
         table.add_row(marker, acc.label, acc.email() or "?", acc.domain, fmt_ttl(acc.seconds_until_expiry()), bal, status)
     return table
 
@@ -434,7 +436,8 @@ def add_account_manual(state: dict, store: AccountStore) -> None:
     acc.balance_cents = balance
     acc.balance_checked_at = time.time()
     store.add(acc, make_active=not store.accounts or prompt_confirm(state, tr(state, "make_active"), True))
-    console.print(Panel(f"{tr(state, 'saved')}\nlabel: {label}\nbalance: {balance if balance is not None else '?'}¢\nmodels: {models}", border_style="green"))
+    bal_text = "?" if balance is None else f"${balance / 100:.2f}"
+    console.print(Panel(f"{tr(state, 'saved')}\nlabel: {label}\n{tr(state, 'balance')}: {bal_text}\nmodels: {models}", border_style="green"))
     pause(state)
 
 
@@ -449,11 +452,23 @@ def add_account_via_browser(state: dict, store: AccountStore) -> None:
     with tempfile.TemporaryDirectory(prefix="zoapi-browser-") as tmp:
         try:
             with sync_playwright() as p:
-                browser = p.chromium.launch_persistent_context(
-                    user_data_dir=tmp,
-                    headless=False,
-                    viewport={"width": 1360, "height": 900},
-                )
+                try:
+                    browser = p.chromium.launch_persistent_context(
+                        user_data_dir=tmp,
+                        headless=False,
+                        viewport={"width": 1360, "height": 900},
+                    )
+                except Exception as e:
+                    if "Executable doesn't exist" in str(e) or "Executable doesn\'t exist" in str(e):
+                        if not ensure_playwright_chromium(state):
+                            raise
+                        browser = p.chromium.launch_persistent_context(
+                            user_data_dir=tmp,
+                            headless=False,
+                            viewport={"width": 1360, "height": 900},
+                        )
+                    else:
+                        raise
                 page = browser.new_page()
                 page.goto("https://zo.computer", wait_until="domcontentloaded")
                 start = time.time()
@@ -495,7 +510,8 @@ def add_account_via_browser(state: dict, store: AccountStore) -> None:
     acc.balance_cents = balance
     acc.balance_checked_at = time.time()
     store.add(acc, make_active=not store.accounts or prompt_confirm(state, tr(state, "make_active"), True))
-    console.print(Panel(f"{tr(state, 'saved')}\nlabel: {label}\nemail: {acc.email() or '?'}\ndomain: {acc.domain}\nbalance: {balance if balance is not None else '?'}¢\nmodels: {models}", border_style="green"))
+    bal_text = "?" if balance is None else f"${balance / 100:.2f}"
+    console.print(Panel(f"{tr(state, 'saved')}\nlabel: {label}\nemail: {acc.email() or '?'}\ndomain: {acc.domain}\n{tr(state, 'balance')}: {bal_text}\nmodels: {models}", border_style="green"))
     pause(state)
 
 

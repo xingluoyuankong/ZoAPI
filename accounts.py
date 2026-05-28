@@ -115,6 +115,8 @@ class Account:
             last_err=d.get("last_err"),
             error_streak=d.get("error_streak", 0),
             disabled=d.get("disabled", False),
+            balance_cents=d.get("balance_cents"),
+            balance_checked_at=d.get("balance_checked_at"),
         )
 
 
