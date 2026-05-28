@@ -299,6 +299,10 @@ def _spawn_proxy_with(python_exe: str) -> bool:
             kwargs["creationflags"] = 0x08000000  # CREATE_NO_WINDOW
         else:
             kwargs["start_new_session"] = True
+        env = os.environ.copy()
+        env["PYTHONIOENCODING"] = "utf-8"
+        env["PYTHONUTF8"] = "1"
+        kwargs["env"] = env
         proc = subprocess.Popen([python_exe, str(ROOT / "proxy.py")], **kwargs)
     except Exception as e:
         try:
@@ -315,11 +319,17 @@ def _spawn_proxy_with(python_exe: str) -> bool:
         PID_FILE.write_text(str(proc.pid), encoding="utf-8")
     except Exception:
         pass
-    for _ in range(40):
-        if proc.poll() is not None:
-            return False
+    deadline = time.time() + 8.0
+    while time.time() < deadline:
         if proxy_running():
             return True
+        rc = proc.poll()
+        if rc is not None:
+            try:
+                LOG_FILE.write_bytes((f"\n[launcher] proxy.py exited early with code {rc}\n").encode("utf-8"))
+            except Exception:
+                pass
+            return False
         time.sleep(0.1)
     return proxy_running()
 

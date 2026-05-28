@@ -1209,18 +1209,18 @@ def _print_startup_banner() -> None:
     print("  ==========")
     if not STORE.accounts:
         print()
-        print("  Аккаунтов пока нет.")
-        print("  API всё равно поднимается и будет ждать добавления аккаунта.")
-        print(f"  → порт: {PROXY_PORT}")
+        print("  No accounts yet.")
+        print("  API will stay up and wait for an account.")
+        print(f"  -> port: {PROXY_PORT}")
         print()
         return
     print()
     a = _pick_account()
     if a:
-        print(f"\n  → активный: {a.label} ({a.email() or a.domain})")
-    print(f"  → порт: {PROXY_PORT}")
-    print(f"  → дефолтная модель: {ZO_DEFAULT_MODEL}")
-    print(f"  → max ошибок до ротации: {MAX_ERRORS_BEFORE_ROTATE}")
+        print(f"  -> active: {a.label} ({a.email() or a.domain})")
+    print(f"  -> port: {PROXY_PORT}")
+    print(f"  -> default model: {ZO_DEFAULT_MODEL}")
+    print(f"  -> max errors before rotate: {MAX_ERRORS_BEFORE_ROTATE}")
     print()
 
 
