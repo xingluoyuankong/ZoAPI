@@ -32,6 +32,7 @@ from fastapi.exceptions import RequestValidationError
 from fastapi.responses import JSONResponse, StreamingResponse
 
 import config
+import runtime
 from accounts import Account, AccountStore
 from anthropic_sse import AnthropicStreamTranslator, sse
 from zo_client import (
@@ -349,14 +350,37 @@ def _convo_key(account_label: str, system: str | None, first_user_msg: str) -> s
 
 
 def _resolve_model(requested: str | None) -> str:
-    if not requested:
+    forced = runtime.get_force_model().strip() if hasattr(runtime, "get_force_model") else ""
+    name = (forced or (requested or "")).strip()
+    if not name:
         return ZO_DEFAULT_MODEL
-    if requested.startswith("zo:"):
-        return requested
-    low = requested.lower()
-    for needle, target in sorted(MODEL_MAP.items(), key=lambda item: len(item[0]), reverse=True):
-        if needle.lower() in low:
+    if name.startswith("zo:"):
+        return name
+
+    # 1) Точные алиасы (короткие имена) — case-insensitive.
+    low = name.lower()
+    for needle, target in MODEL_MAP.items():
+        if needle.lower() == low:
             return target
+
+    # 2) Умная маршрутизация по префиксу.
+    if name.startswith("claude"):
+        return f"zo:anthropic/{name}"
+    if name.startswith("gpt-") or name.startswith("o1") or name.startswith("o3") or name.startswith("o4") or name.startswith("codex"):
+        return f"zo:openai/{name}"
+    if name.startswith("gemini"):
+        return f"zo:google/{name}"
+    if name.startswith("grok"):
+        return f"zo:xai/{name}"
+    if name.startswith("deepseek"):
+        return f"zo:deepseek/{name}"
+    if name.startswith("llama"):
+        return f"zo:meta/{name}"
+    if name.startswith("qwen"):
+        return f"zo:alibaba/{name}"
+    if name.startswith("kimi"):
+        return f"zo:moonshot/{name}"
+
     return ZO_DEFAULT_MODEL
 
 

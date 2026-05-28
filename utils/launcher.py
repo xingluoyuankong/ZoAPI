@@ -39,6 +39,7 @@ from rich.text import Text
 from zo_client import ZoClient
 from utils import installers
 from utils import proxies as _proxies_module
+import runtime
 
 STATE_FILE = ROOT / "launcher_state.json"
 LOG_FILE = ROOT / "proxy.log"
@@ -154,6 +155,22 @@ LANGS = {
         "state_off": "Неактивен",
         "empty_accounts": "пока нет аккаунтов",
         "proxies_menu": "Прокси",
+        "force_menu": "Принудительная модель",
+        "force_title": "Принудительная модель",
+        "force_body": (
+            "Когда модель тут задана, прокси использует её вместо той, что\n"
+            "прислал клиент.  Когда пусто — клиент сам выбирает\n"
+            "(claude / codex / opencode шлют свою)."
+        ),
+        "force_current": "Сейчас",
+        "force_none": "не задана (passthrough)",
+        "force_choose": "Выбрать модель",
+        "force_custom": "Ввести вручную",
+        "force_clear": "Сбросить (passthrough)",
+        "force_back": "Назад",
+        "force_set": "Принудительная модель: {model}",
+        "force_cleared": "Принудительная модель сброшена. Теперь passthrough.",
+        "force_input": "Имя модели:",
         "proxies_title": "управление прокси",
         "proxies_enable": "Включить",
         "proxies_disable": "Выключить",
@@ -276,6 +293,21 @@ LANGS = {
         "state_off": "Inactive",
         "empty_accounts": "no accounts yet",
         "proxies_menu": "proxies",
+        "force_menu": "forced model",
+        "force_title": "forced model",
+        "force_body": (
+            "When set, proxy uses this model instead of what the client sends.\n"
+            "When empty — client picks its own (claude / codex / opencode send their own)."
+        ),
+        "force_current": "Current",
+        "force_none": "not set (passthrough)",
+        "force_choose": "Pick model",
+        "force_custom": "Enter manually",
+        "force_clear": "Clear (passthrough)",
+        "force_back": "Back",
+        "force_set": "Forced model: {model}",
+        "force_cleared": "Forced model cleared. Passthrough is back.",
+        "force_input": "Model name:",
         "proxies_title": "proxy management",
         "proxies_enable": "enable",
         "proxies_disable": "disable",
@@ -982,6 +1014,76 @@ def proxies_menu(state: dict) -> None:
             pause(state)
 
 
+FORCE_PRESETS = [
+    ("opus", "→ Claude Opus 4.8"),
+    ("sonnet", "→ Claude Sonnet 4.6"),
+    ("haiku", "→ Claude Haiku 4.6"),
+    ("codex", "→ GPT-5 Codex"),
+    ("claude-opus-4-8", "Claude Opus 4.8"),
+    ("claude-opus-4-8-thinking", "Claude Opus 4.8 (Thinking)"),
+    ("claude-opus-4-7", "Claude Opus 4.7"),
+    ("claude-sonnet-4-6", "Claude Sonnet 4.6"),
+    ("claude-sonnet-4-6-thinking", "Claude Sonnet 4.6 (Thinking)"),
+    ("claude-haiku-4-6", "Claude Haiku 4.6"),
+    ("gpt-5", "GPT-5"),
+    ("gpt-5-pro", "GPT-5 Pro"),
+    ("gpt-5-codex", "GPT-5 Codex"),
+    ("gpt-5-mini", "GPT-5 Mini"),
+    ("o3", "o3"),
+    ("o3-pro", "o3 Pro"),
+    ("o4-mini", "o4 Mini"),
+    ("gemini-3.0-pro", "Gemini 3.0 Pro"),
+    ("gemini-3.0-flash", "Gemini 3.0 Flash"),
+    ("grok-4", "Grok 4"),
+    ("deepseek-v3", "DeepSeek V3"),
+    ("kimi-k2", "Kimi K2"),
+]
+
+
+def force_model_menu(state: dict) -> None:
+    while True:
+        console.clear()
+        current = runtime.get_force_model().strip()
+        current_text = current if current else tr(state, "force_none")
+        info = (
+            f"{tr(state, 'force_body')}\n\n"
+            f"{tr(state, 'force_current')}: [bold #a78bfa]{current_text}[/bold #a78bfa]"
+        )
+        console.print(Panel(info, title=tr(state, "force_title"), border_style="#b8a7d9", padding=(1, 2)))
+
+        choices = [Choice(f"{name}  —  {desc}", name) for name, desc in FORCE_PRESETS]
+        choices += [
+            Separator(),
+            Choice(tr(state, "force_custom"), "__custom__"),
+            Choice(tr(state, "force_clear"), "__clear__"),
+            Choice(tr(state, "force_back"), "__back__"),
+        ]
+        choice = select_menu(state, tr(state, "force_choose"), choices)
+        if choice in (None, "__back__"):
+            return
+        if choice == "__clear__":
+            runtime.set_force_model("")
+            console.print(f"[#34d399]{glyphs()['ok']} {tr(state, 'force_cleared')}[/#34d399]")
+            pause(state)
+            continue
+        if choice == "__custom__":
+            value = questionary.text(tr(state, "force_input"), style=ui_style()).ask()
+            if value is None:
+                continue
+            value = value.strip()
+            if not value:
+                runtime.set_force_model("")
+                console.print(f"[#34d399]{glyphs()['ok']} {tr(state, 'force_cleared')}[/#34d399]")
+            else:
+                runtime.set_force_model(value)
+                console.print(f"[#34d399]{glyphs()['ok']} {tr(state, 'force_set', model=value)}[/#34d399]")
+            pause(state)
+            continue
+        runtime.set_force_model(choice)
+        console.print(f"[#34d399]{glyphs()['ok']} {tr(state, 'force_set', model=choice)}[/#34d399]")
+        pause(state)
+
+
 def open_support(state: dict) -> None:
     webbrowser.open("http://t.me/send?start=IVO5fcnt9PXb")
     console.print(f"[#b8a7d9]{glyphs()['ok']} {tr(state, 'support_opened')}[/#b8a7d9]")
@@ -1081,6 +1183,7 @@ def main() -> int:
                 Choice(tr(state, "setup_examples"), "setup"),
                 Choice(tr(state, "install_clients"), "install_clients"),
                 Choice(tr(state, "proxies_menu"), "proxies"),
+                Choice(tr(state, "force_menu"), "force"),
                 Choice(tr(state, "language"), "lang"),
                 Choice(tr(state, "docs"), "docs"),
                 Separator(),
@@ -1105,6 +1208,8 @@ def main() -> int:
             install_clients_menu(state)
         elif choice == "proxies":
             proxies_menu(state)
+        elif choice == "force":
+            force_model_menu(state)
         elif choice == "support":
             open_support(state)
         elif choice == "lang":

@@ -21,30 +21,21 @@ PROXY_PORT = 17878
 
 # Модель Zo по умолчанию (когда клиент не указал явно).
 # Полный список: GET https://api.zo.computer/models/available
-ZO_DEFAULT_MODEL = "zo:anthropic/claude-opus-4-7"
+ZO_DEFAULT_MODEL = "zo:anthropic/claude-opus-4-8"
 
-# Мэппинг: что клиент просит → что отправляем в Zo.
-# Ключ — подстрока в названии модели из запроса.
+# Короткие алиасы. Ключ — ТОЧНОЕ имя (case-insensitive), не подстрока.
+# Полные имена моделей (например claude-opus-4-8-20251210, gpt-5-codex)
+# идут пассивом — proxy.py сам маршрутизирует их через провайдера по
+# префиксу, поэтому добавлять сюда каждую новую версию НЕ надо.
 MODEL_MAP = {
-    "claude-opus": "zo:anthropic/claude-opus-4-7",
-    "claude-sonnet": "zo:anthropic/claude-sonnet-4-6",
-    "claude-haiku": "zo:anthropic/claude-opus-4-7",
-    "opus": "zo:anthropic/claude-opus-4-7",
+    "opus": "zo:anthropic/claude-opus-4-8",
     "sonnet": "zo:anthropic/claude-sonnet-4-6",
-    "haiku": "zo:anthropic/claude-opus-4-7",
-    "gpt-5.5": "zo:openai/gpt-5.5",
-    "gpt-5.4-mini": "zo:openai/gpt-5.4-mini",
-    "gpt-5.3-codex": "zo:openai/gpt-5.3-codex",
-    "gpt-5.3": "zo:openai/gpt-5.3-codex",
-    "gpt-5-mini": "zo:openai/gpt-5.4-mini",
-    "gpt-5": "zo:openai/gpt-5.5",
-    "codex": "zo:openai/gpt-5.3-codex",
-    "o4-mini": "zo:openai/gpt-5.4-mini",
-    "o3": "zo:openai/gpt-5.5",
-    "mini": "zo:openai/gpt-5.4-mini",
-    "gemini": "zo:google/gemini-3.1-pro-preview",
-    "deepseek": "zo:deepseek/deepseek-v4-pro",
-    "glm": "zo:zai/glm-5",
+    "haiku": "zo:anthropic/claude-haiku-4-6",
+    "codex": "zo:openai/gpt-5-codex",
+    "mini": "zo:openai/gpt-5-mini",
+    "gemini": "zo:google/gemini-3.0-pro",
+    "grok": "zo:xai/grok-4",
+    "deepseek": "zo:deepseek/deepseek-v3",
 }
 
 
