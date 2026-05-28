@@ -31,8 +31,10 @@ run.bat
 ```
 
 Скрипт сам:
-- создаст venv
-- тихо поставит зависимости
+- найдёт Python 3.10+ (`py -3` / `python` / `python3`)
+- создаст `.venv`, если её ещё нет
+- каждый запуск быстро проверит нужные пакеты
+- если чего-то не хватает — тихо доставит из `requirements.txt`
 - откроет TUI-меню
 
 ---
@@ -145,15 +147,15 @@ curl http://127.0.0.1:17878/v1/admin/accounts | jq
 ## Файлы
 
 ```
+run.bat / run.sh      # единая точка входа
+utils/launcher.py     # TUI-лончер (questionary)
 proxy.py              # FastAPI сервер
-launcher.py           # TUI-лончер (questionary)
 accounts.py           # multi-account store + ротация
 zo_client.py          # клиент к Zo /ask
 anthropic_sse.py      # Zo SSE → Anthropic SSE
 openai_sse.py         # Zo SSE → OpenAI Chat / Responses SSE / WS
-setup.py              # тонкая обёртка для совместимости (--check)
 config.py             # порт, MODEL_MAP и дефолты
-run.bat / run.sh      # единая точка входа
+requirements.txt      # зависимости
 ```
 
 ---

@@ -32,6 +32,10 @@ from pathlib import Path
 from typing import Any
 from urllib.parse import unquote
 
+ROOT = Path(__file__).resolve().parent.parent
+if str(ROOT) not in sys.path:
+    sys.path.insert(0, str(ROOT))
+
 import questionary
 from questionary import Choice, Separator
 
@@ -42,7 +46,6 @@ from accounts import (
     extract_tokens_from_cookie,
 )
 
-ROOT = Path(__file__).resolve().parent
 STATE_FILE = ROOT / "launcher_state.json"
 PROXY_PORT = 17878
 PROXY_URL = f"http://127.0.0.1:{PROXY_PORT}"
