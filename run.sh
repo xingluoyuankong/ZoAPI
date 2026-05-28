@@ -14,7 +14,7 @@ fi
 
 VPY="./.venv/bin/python"
 if ! "$VPY" - <<'PY' >/dev/null 2>&1
-import fastapi, uvicorn, httpx, pydantic, questionary, rich, playwright
+import fastapi, uvicorn, httpx, pydantic, questionary, rich, playwright, playwright_stealth
 PY
 then
   echo "[!] Похоже, зависимости не поставлены до конца. Запусти setup.sh"

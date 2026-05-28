@@ -4,6 +4,7 @@ import asyncio
 import datetime as dt
 import json
 import os
+import shutil
 import socket
 import subprocess
 import sys
@@ -17,8 +18,13 @@ if str(ROOT) not in sys.path:
     sys.path.insert(0, str(ROOT))
 
 import questionary
+from accounts import Account, AccountStore, clean_domain, extract_domain_from_access_token
 from playwright.sync_api import TimeoutError as PlaywrightTimeoutError
 from playwright.sync_api import sync_playwright
+try:
+    from playwright_stealth import stealth_sync
+except Exception:
+    stealth_sync = None
 from questionary import Choice, Separator
 from rich import box
 from rich.align import Align
@@ -26,9 +32,6 @@ from rich.console import Console, Group
 from rich.panel import Panel
 from rich.table import Table
 from rich.text import Text
-
-from accounts import Account, AccountStore, extract_domain_from_access_token, extract_tokens_from_cookie
-from config import PROXY_PORT
 from zo_client import ZoClient
 
 STATE_FILE = ROOT / "launcher_state.json"
@@ -69,7 +72,7 @@ LANGS = {
         "no_accounts": "нет аккаунтов",
         "install_chromium": "Ставлю временный Chromium для авторизации...",
         "auth_title": "временный браузер для входа",
-        "auth_body": "Откроется временный браузер.\n\n1. Войди в Zo.\n2. Если в письме придёт ссылка подтверждения — её можно просто вставить сюда.\n3. Как только появятся нужные cookie, браузер закроется сам.",
+        "auth_body": "Откроется временный браузер.\n\n1. Войди в Zo.\n2. Если придёт письмо с verify-link — открой её в этом же окне браузера.\n3. JavaScript и редиректы включены.\n4. Как только появятся нужные cookie, окно закроется само.",
         "auth_fail": "Не удалось подготовить браузер Playwright.",
         "auth_browser_fail": "Ошибка браузерной авторизации",
         "browser_choice": "Браузер для входа",
@@ -142,7 +145,7 @@ LANGS = {
         "no_accounts": "no accounts",
         "install_chromium": "Installing temporary Chromium for auth...",
         "auth_title": "temporary browser sign-in",
-        "auth_body": "A fresh temporary Chromium will open.\n\nSign into Zo there. As soon as the required cookies appear, the window closes automatically, then login, balance and models are verified and the account is saved.",
+        "auth_body": "A temporary browser window will open.\n\nSign into Zo there. If the email contains a verify link, open it in that same window. JavaScript and redirects stay enabled. As soon as the required cookies appear, the window closes automatically and the account is verified and saved.",
         "auth_fail": "Could not install Playwright Chromium.",
         "auth_browser_fail": "Browser auth failed",
         "cookies_timeout": "Timed out waiting for cookies.",
@@ -262,24 +265,69 @@ def start_proxy() -> bool:
     return False
 
 
+def detect_preferred_browser() -> tuple[dict[str, str], str]:
+    candidates: list[tuple[dict[str, str], str]] = []
+    if sys.platform.startswith("win"):
+        local = os.environ.get("LOCALAPPDATA", "")
+        pf = os.environ.get("PROGRAMFILES", "")
+        pfx86 = os.environ.get("PROGRAMFILES(X86)", "")
+        win_paths = [
+            ({"channel": "chrome"}, "Google Chrome"),
+            ({"channel": "msedge"}, "Microsoft Edge"),
+            ({"executable_path": os.path.join(local, "Google", "Chrome", "Application", "chrome.exe")}, "Google Chrome"),
+            ({"executable_path": os.path.join(local, "Microsoft", "Edge", "Application", "msedge.exe")}, "Microsoft Edge"),
+            ({"executable_path": os.path.join(pf, "Google", "Chrome", "Application", "chrome.exe")}, "Google Chrome"),
+            ({"executable_path": os.path.join(pfx86, "Google", "Chrome", "Application", "chrome.exe")}, "Google Chrome"),
+            ({"executable_path": os.path.join(pf, "Microsoft", "Edge", "Application", "msedge.exe")}, "Microsoft Edge"),
+            ({"executable_path": os.path.join(pfx86, "Microsoft", "Edge", "Application", "msedge.exe")}, "Microsoft Edge"),
+        ]
+        candidates.extend(win_paths)
+    elif sys.platform == "darwin":
+        candidates.extend([
+            ({"channel": "chrome"}, "Google Chrome"),
+            ({"channel": "msedge"}, "Microsoft Edge"),
+            ({"executable_path": "/Applications/Google Chrome.app/Contents/MacOS/Google Chrome"}, "Google Chrome"),
+            ({"executable_path": "/Applications/Microsoft Edge.app/Contents/MacOS/Microsoft Edge"}, "Microsoft Edge"),
+        ])
+    else:
+        if shutil.which("google-chrome"):
+            candidates.append(({"executable_path": shutil.which("google-chrome") or ""}, "Google Chrome"))
+        if shutil.which("microsoft-edge"):
+            candidates.append(({"executable_path": shutil.which("microsoft-edge") or ""}, "Microsoft Edge"))
+        candidates.extend([({"channel": "chrome"}, "Google Chrome"), ({"channel": "msedge"}, "Microsoft Edge")])
+    for opts, label in candidates:
+        path = opts.get("executable_path")
+        if path and os.path.exists(path):
+            return opts, label
+        if opts.get("channel"):
+            return opts, label
+    return {}, "Chromium"
+
+
+def browser_stealth_scripts(context) -> None:
+    context.add_init_script("""
+Object.defineProperty(navigator, 'webdriver', { get: () => undefined });
+Object.defineProperty(navigator, 'languages', { get: () => ['en-US', 'en', 'ru-RU', 'ru'] });
+Object.defineProperty(navigator, 'platform', { get: () => 'Win32' });
+Object.defineProperty(navigator, 'plugins', { get: () => [1, 2, 3, 4, 5] });
+window.chrome = window.chrome || { runtime: {} };
+const originalQuery = window.navigator.permissions && window.navigator.permissions.query;
+if (originalQuery) {
+  window.navigator.permissions.query = (parameters) => (
+    parameters && parameters.name === 'notifications'
+      ? Promise.resolve({ state: Notification.permission })
+      : originalQuery(parameters)
+  );
+}
+""")
+
+
 def ensure_playwright_chromium(state: dict) -> bool:
     try:
-        probe = subprocess.run(
-            [sys.executable, "-m", "playwright", "install", "--dry-run", "chromium"],
-            cwd=ROOT,
-            capture_output=True,
-            text=True,
-            timeout=60,
-        )
-        out = ((probe.stdout or "") + (probe.stderr or "")).lower()
-        needs = probe.returncode != 0 or "not installed" in out or "will download" in out
-    except Exception:
-        needs = True
-    if not needs:
+        subprocess.run([sys.executable, "-m", "playwright", "install", "chromium"], cwd=ROOT, check=True)
         return True
-    console.print(f"[#{'b8a7d9'}]{glyphs()['run']} {tr(state, 'install_chromium')}[/#{'b8a7d9'}]")
-    r = subprocess.run([sys.executable, "-m", "playwright", "install", "chromium"], cwd=ROOT)
-    return r.returncode == 0
+    except Exception:
+        return False
 
 
 def fmt_ttl(seconds: int | None) -> str:
@@ -469,28 +517,45 @@ def add_account_via_browser(state: dict, store: AccountStore) -> None:
         "https://api.zo.computer",
         "https://auth.zo.computer",
     ]
+    launch_opts, browser_name = detect_preferred_browser()
     try:
         with sync_playwright() as p:
+            console.print(f"[#b8a7d9]{glyphs()['run']} Браузер: {browser_name}[/#b8a7d9]")
             browser = p.chromium.launch(
                 headless=False,
+                ignore_default_args=["--enable-automation"],
                 args=[
                     "--no-first-run",
                     "--no-default-browser-check",
+                    "--disable-blink-features=AutomationControlled",
                     "--disable-dev-shm-usage",
                     "--disable-features=Translate,MediaRouter,OptimizationHints",
                 ],
+                **launch_opts,
             )
             context = browser.new_context(
                 viewport={"width": 1280, "height": 860},
                 ignore_https_errors=True,
+                java_script_enabled=True,
+                locale="en-US",
+                user_agent=(
+                    "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 "
+                    "(KHTML, like Gecko) Chrome/136.0.0.0 Safari/537.36"
+                ),
             )
+            browser_stealth_scripts(context)
             page = context.new_page()
+            if stealth_sync is not None:
+                try:
+                    stealth_sync(page)
+                except Exception:
+                    pass
             try:
-                page.goto(login_url, wait_until="commit", timeout=60000)
+                page.goto(login_url, wait_until="domcontentloaded", timeout=90000)
             except Exception:
                 pass
             start = time.time()
-            while time.time() - start < 600:
+            while time.time() - start < 900:
                 try:
                     cookies = context.cookies(cookie_urls)
                 except Exception:
@@ -500,9 +565,18 @@ def add_account_via_browser(state: dict, store: AccountStore) -> None:
                 if access and refresh:
                     captured = (access, refresh, clean_domain(extract_domain_from_access_token(access) or ""))
                     break
-                page.wait_for_timeout(500)
-            context.close()
-            browser.close()
+                try:
+                    page.wait_for_timeout(700)
+                except Exception:
+                    break
+            try:
+                context.close()
+            except Exception:
+                pass
+            try:
+                browser.close()
+            except Exception:
+                pass
     except PlaywrightTimeoutError:
         pass
     except Exception as e:

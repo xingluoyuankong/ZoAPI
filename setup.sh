@@ -43,7 +43,7 @@ echo "[+] Устанавливаю зависимости проекта..."
 "$VPY" -m pip install -r requirements.txt
 
 echo "[+] Проверяю Python-модули..."
-"$VPY" -c "import fastapi, uvicorn, httpx, pydantic, questionary, rich, playwright; print('ok')"
+"$VPY" -c "import fastapi, uvicorn, httpx, pydantic, questionary, rich, playwright, playwright_stealth; print('ok')"
 
 echo "[+] Ставлю браузер Chromium для Playwright..."
 "$VPY" -m playwright install chromium

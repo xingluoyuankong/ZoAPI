@@ -77,7 +77,7 @@ if errorlevel 1 (
 )
 
 echo [+] Проверяю Python-модули...
-"%VPY%" -c "import fastapi, uvicorn, httpx, pydantic, questionary, rich, playwright; print('ok')"
+"%VPY%" -c "import fastapi, uvicorn, httpx, pydantic, questionary, rich, playwright, playwright_stealth; print('ok')"
 if errorlevel 1 (
   echo [!] Проверка импортов не прошла.
   echo.
