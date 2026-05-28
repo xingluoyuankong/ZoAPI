@@ -20,7 +20,7 @@ if not exist ".venv\Scripts\python.exe" (
 
 set "VPY=.venv\Scripts\python.exe"
 
-"%VPY%" -c "import fastapi, uvicorn, httpx, pydantic, questionary, rich, playwright, playwright_stealth, patchright" >nul 2>nul
+"%VPY%" -c "import fastapi, uvicorn, httpx, pydantic, questionary, rich, playwright, patchright" >nul 2>nul
 if errorlevel 1 (
   echo [!] Похоже, зависимости не поставлены до конца.
   echo     Запусти setup.bat

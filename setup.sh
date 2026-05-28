@@ -40,10 +40,11 @@ echo "[+] Обновляю pip / setuptools / wheel..."
 "$VPY" -m pip install --quiet --upgrade pip setuptools wheel
 
 echo "[+] Устанавливаю зависимости проекта..."
+"$VPY" -m pip uninstall -y playwright-stealth >/dev/null 2>&1 || true
 "$VPY" -m pip install -r requirements.txt
 
 echo "[+] Проверяю Python-модули..."
-"$VPY" -c "import fastapi, uvicorn, httpx, pydantic, questionary, rich, playwright, playwright_stealth, patchright; print('ok')"
+"$VPY" -c "import fastapi, uvicorn, httpx, pydantic, questionary, rich, playwright, patchright; print('ok')"
 
 echo "[+] Ставлю браузер Chromium для Playwright..."
 "$VPY" -m playwright install chromium

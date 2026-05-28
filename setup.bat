@@ -70,6 +70,7 @@ if errorlevel 1 (
 )
 
 echo [+] Устанавливаю зависимости проекта...
+"%VPY%" -m pip uninstall -y playwright-stealth >nul 2>nul
 "%VPY%" -m pip install -r requirements.txt
 if errorlevel 1 (
   echo [!] Не удалось поставить зависимости.
@@ -79,7 +80,7 @@ if errorlevel 1 (
 )
 
 echo [+] Проверяю Python-модули...
-"%VPY%" -c "import fastapi, uvicorn, httpx, pydantic, questionary, rich, playwright, playwright_stealth, patchright; print('ok')"
+"%VPY%" -c "import fastapi, uvicorn, httpx, pydantic, questionary, rich, playwright, patchright; print('ok')"
 if errorlevel 1 (
   echo [!] Проверка импортов не прошла.
   echo.
