@@ -137,7 +137,6 @@ LANGS = {
         "manual_setup_title": "как подключить приложения вручную",
         "manual_setup": "OpenAI-compatible приложения:\n  Base URL: {api}\n  API key:  zo-proxy\n\nAnthropic-compatible приложения:\n  Base URL: {proxy}\n  API key / token: zo-proxy\n  endpoint: /v1/messages",
         "docs_opened": "Документация по установке открыта в браузере.",
-        "footer": "Стрелки: выбор • Enter: открыть • Локальный API работает, пока открыто это окно",
         "press_enter": "Нажми Enter, чтобы продолжить...",
         "lang_switch": "Сменить язык",
         "lang_ru": "Русский",
@@ -260,7 +259,6 @@ LANGS = {
         "manual_setup_title": "manual client setup",
         "manual_setup": "OpenAI-compatible apps:\n  Base URL: {api}\n  API key:  zo-proxy\n\nAnthropic-compatible apps:\n  Base URL: {proxy}\n  API key / token: zo-proxy\n  endpoint: /v1/messages",
         "docs_opened": "Install guide opened in browser.",
-        "footer": "Arrows: move • Enter: open • Local API stays up while this window is open",
         "press_enter": "Press Enter to continue...",
         "lang_switch": "Switch language",
         "lang_ru": "Russian",
@@ -538,15 +536,32 @@ async def fetch_account_health(account: Account) -> tuple[int | None, int]:
         await client.close()
 
 
-def header_panel(state: dict, running: bool) -> Panel:
-    status = tr(state, "running") if running else tr(state, "starting")
-    status_style = "#34d399" if running else "#fbbf24"
-    group = Group(
-        Align.center(Text(tr(state, "app_name"), style="bold #f5f3ff")),
-        Align.center(Text(tr(state, "subtitle"), style="#ddd6fe")),
-        Align.center(Text(status, style=f"bold {status_style}")),
-    )
-    return Panel(group, border_style="#b8a7d9", padding=(1, 2))
+def header_panel(state: dict, store: AccountStore, running: bool) -> Panel:
+    usable = len(store.list_usable())
+    total = len(store.accounts)
+    mode = getattr(store, "mode", "fixed")
+    active = store.active_label or "—"
+
+    status_label = tr(state, "proxy_on") if running else tr(state, "proxy_off")
+    status_style = "bold #34d399" if running else "bold #fb7185"
+    big_status_text = tr(state, "running") if running else tr(state, "starting")
+    big_status_style = "bold #34d399" if running else "bold #fbbf24"
+
+    grid = Table.grid(expand=True, padding=(0, 1))
+    grid.add_column(justify="left", ratio=1, no_wrap=True)
+    grid.add_column(justify="center", ratio=2)
+    grid.add_column(justify="right", ratio=1, no_wrap=True)
+
+    api_cell = Text("API: ", style="#aaa3a3") + Text(status_label, style=status_style)
+    accounts_cell = Text(f"{tr(state, 'accounts')}: {usable}/{total}", style="#a78bfa")
+    mode_cell = Text(f"{tr(state, 'mode')}: {mode}", style="#a78bfa")
+    active_cell = Text(f"{tr(state, 'active')}: {active}", style="#a78bfa")
+
+    grid.add_row(api_cell, Text(tr(state, "app_name"), style="bold #f5f3ff"), accounts_cell)
+    grid.add_row("", Text(tr(state, "subtitle"), style="#ddd6fe"), "")
+    grid.add_row(mode_cell, Text(big_status_text, style=big_status_style), active_cell)
+
+    return Panel(grid, border_style="#b8a7d9", padding=(1, 2))
 
 
 def status_style_and_text(state: dict, acc: Account) -> tuple[str, str]:
@@ -584,26 +599,10 @@ def accounts_table(state: dict, store: AccountStore) -> Table:
     return table
 
 
-def bottom_bar(state: dict, store: AccountStore, proxy_ok: bool) -> Panel:
-    usable = len(store.list_usable())
-    total = len(store.accounts)
-    mode = getattr(store, "mode", "fixed")
-    active = store.active_label or "-"
-    text = Text()
-    text.append("API: ", style="bold #f5f3ff")
-    text.append(tr(state, "proxy_on") if proxy_ok else tr(state, "proxy_off"), style="#34d399" if proxy_ok else "#fb7185")
-    text.append(f"   {tr(state, 'accounts')}: {usable}/{total}", style="#a78bfa")
-    text.append(f"   {tr(state, 'mode')}: {mode}", style="#a78bfa")
-    text.append(f"   {tr(state, 'active')}: {active}", style="#a78bfa")
-    text.append(f"   {tr(state, 'footer')}", style="#8b5cf6")
-    return Panel(text, border_style="#b8a7d9", padding=(0, 1))
-
-
 def draw_dashboard(state: dict, store: AccountStore, running: bool) -> None:
     console.clear()
-    console.print(header_panel(state, running))
+    console.print(header_panel(state, store, running))
     console.print(Panel(accounts_table(state, store), title=tr(state, "table_title"), border_style="#b8a7d9", padding=(0, 1)))
-    console.print(bottom_bar(state, store, running))
 
 
 def select_menu(state: dict, message: str, choices: list[Any], default: str | None = None):
@@ -1059,7 +1058,7 @@ def main() -> int:
     state = load_state()
     store = AccountStore()
     console.clear()
-    console.print(header_panel(state, False))
+    console.print(header_panel(state, store, False))
     console.print(f"[#b8a7d9]{glyphs()['run']} {tr(state, 'proxy_start')}[/#b8a7d9]")
     if not start_proxy():
         console.print(f"[#f4b7b7]{glyphs()['err']} {tr(state, 'api_failed')}[/#f4b7b7]")
@@ -1085,8 +1084,9 @@ def main() -> int:
                 Choice(tr(state, "language"), "lang"),
                 Choice(tr(state, "docs"), "docs"),
                 Separator(),
-                Choice(tr(state, "support_author"), "support"),
                 Choice(tr(state, "exit"), "exit"),
+                Separator(),
+                Choice(tr(state, "support_author"), "support"),
             ],
         )
         if choice in (None, "exit"):

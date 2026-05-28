@@ -23,6 +23,7 @@ from __future__ import annotations
 
 import asyncio
 import json
+import random
 import time
 from pathlib import Path
 from typing import Any, Awaitable, Callable, Iterable
@@ -45,6 +46,7 @@ FREE_LIST_URLS = [
 CHECK_URL = "https://api.zo.computer/"
 CHECK_TIMEOUT_S = 2.0
 CHECK_CONCURRENCY = 80
+CHECK_MAX = 100
 
 
 # ---------------------------------------------------------------------------
@@ -144,10 +146,10 @@ async def _check_one(proxy: str, timeout: float) -> tuple[str, bool, float]:
     try:
         async with httpx.AsyncClient(
             proxy=proxy,
-            timeout=httpx.Timeout(timeout, connect=timeout),
+            timeout=httpx.Timeout(timeout, connect=min(1.5, timeout)),
             follow_redirects=False,
         ) as c:
-            r = await c.get(CHECK_URL)
+            r = await asyncio.wait_for(c.get(CHECK_URL), timeout=timeout + 0.2)
         latency = (time.monotonic() - start) * 1000.0
         # Любой ответ от Zo (включая 401/404) — значит прокси доносит трафик.
         if r.status_code < 500 and latency <= timeout * 1000.0:
@@ -163,26 +165,38 @@ async def _check_all(
     on_progress: Callable[[int, int], Awaitable[None] | None] | None,
 ) -> list[tuple[str, float]]:
     sem = asyncio.Semaphore(CHECK_CONCURRENCY)
-    done = 0
     total = len(proxies)
     results: list[tuple[str, float]] = []
 
-    async def worker(p: str) -> None:
-        nonlocal done
+    async def worker(p: str) -> tuple[str, bool, float]:
         async with sem:
-            proxy, ok, latency = await _check_one(p, timeout)
-        done += 1
-        if ok:
-            results.append((proxy, latency))
-        if on_progress is not None:
-            try:
-                res = on_progress(done, total)
-                if asyncio.iscoroutine(res):
-                    await res
-            except Exception:
-                pass
+            return await _check_one(p, timeout)
 
-    await asyncio.gather(*(worker(p) for p in proxies))
+    tasks = [asyncio.create_task(worker(p)) for p in proxies]
+    done = 0
+    try:
+        for coro in asyncio.as_completed(tasks):
+            try:
+                proxy, ok, latency = await coro
+            except (asyncio.CancelledError, Exception):
+                proxy, ok, latency = "", False, 0.0
+            done += 1
+            if ok:
+                results.append((proxy, latency))
+            if on_progress is not None:
+                try:
+                    res = on_progress(done, total)
+                    if asyncio.iscoroutine(res):
+                        await res
+                except Exception:
+                    pass
+    except (asyncio.CancelledError, KeyboardInterrupt):
+        pass
+    finally:
+        for t in tasks:
+            if not t.done():
+                t.cancel()
+        await asyncio.gather(*tasks, return_exceptions=True)
     return sorted(results, key=lambda x: x[1])
 
 
@@ -190,16 +204,34 @@ def check_and_store(
     timeout: float = CHECK_TIMEOUT_S,
     on_progress: Callable[[int, int], None] | None = None,
 ) -> dict[str, Any]:
-    """Проверить весь список из proxies.txt, оставить только живые ≤ timeout."""
-    proxies = load_proxies()
-    if not proxies:
+    """Проверить прокси из proxies.txt (не более CHECK_MAX за раз),
+    оставить только живые ≤ timeout. Поддерживает прерывание Ctrl+C —
+    сохраняет частичный результат."""
+    all_proxies = load_proxies()
+    if not all_proxies:
         state = load_state()
         state["alive"] = []
         state["last_check"] = int(time.time())
         save_state(state)
-        return {"total": 0, "alive": 0, "ms": 0, "items": []}
+        return {
+            "total": 0,
+            "checked": 0,
+            "alive": 0,
+            "ms": 0,
+            "items": [],
+            "interrupted": False,
+        }
+
+    if len(all_proxies) > CHECK_MAX:
+        sample = list(all_proxies)
+        random.shuffle(sample)
+        proxies = sample[:CHECK_MAX]
+    else:
+        proxies = all_proxies
 
     started = time.monotonic()
+    interrupted = False
+    alive: list[tuple[str, float]] = []
     loop = asyncio.new_event_loop()
     try:
         asyncio.set_event_loop(loop)
@@ -208,19 +240,33 @@ def check_and_store(
             if on_progress is not None:
                 on_progress(done, total)
 
-        alive = loop.run_until_complete(_check_all(proxies, timeout, progress))
+        task = loop.create_task(_check_all(proxies, timeout, progress))
+        try:
+            alive = loop.run_until_complete(task)
+        except KeyboardInterrupt:
+            interrupted = True
+            task.cancel()
+            try:
+                alive = loop.run_until_complete(asyncio.wait_for(task, timeout=2.0))
+            except Exception:
+                alive = []
     finally:
-        loop.close()
+        try:
+            loop.close()
+        except Exception:
+            pass
 
     state = load_state()
     state["alive"] = [{"url": p, "latency_ms": int(lat)} for p, lat in alive]
     state["last_check"] = int(time.time())
     save_state(state)
     return {
-        "total": len(proxies),
+        "total": len(all_proxies),
+        "checked": len(proxies),
         "alive": len(alive),
         "ms": int((time.monotonic() - started) * 1000),
         "items": state["alive"],
+        "interrupted": interrupted,
     }
 
 
