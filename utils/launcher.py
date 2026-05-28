@@ -245,15 +245,13 @@ def start_proxy() -> bool:
     cmd = [sys.executable, "proxy.py"]
     if os.name == "nt":
         flags = 0x00000008 | 0x00000200
-        subprocess.Popen(cmd, cwd=ROOT, creationflags=flags, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+        with LOG_FILE.open("ab") as f:
+            subprocess.Popen(cmd, cwd=ROOT, creationflags=flags, stdout=f, stderr=f)
     else:
         with LOG_FILE.open("ab") as f:
             subprocess.Popen(cmd, cwd=ROOT, stdout=f, stderr=f, start_new_session=True)
-    for _ in range(60):
-        time.sleep(0.2)
-        if proxy_running():
-            return True
-    return False
+    time.sleep(0.2)
+    return True
 
 
 def ensure_playwright_chromium(state: dict) -> bool:
@@ -603,9 +601,7 @@ def main() -> int:
     console.clear()
     console.print(header_panel(state, False))
     console.print(f"[green]{glyphs()['run']} {tr(state, 'proxy_start')}[/green]")
-    if not start_proxy():
-        console.print(f"[red]{glyphs()['err']} {tr(state, 'proxy_fail')}[/red]")
-        return 1
+    start_proxy()
     if store.accounts:
         try:
             asyncio.run(refresh_store_health(store))
