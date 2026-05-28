@@ -74,6 +74,8 @@ echo [+] Устанавливаю зависимости проекта...
 "%VPY%" -m pip install -r requirements.txt
 if errorlevel 1 (
   echo [!] Не удалось поставить зависимости.
+  echo     Если упало на pydantic-core / pyo3 — у тебя слишком свежий Python.
+  echo     Поставь Python 3.12 или 3.13 и повтори setup.bat.
   echo.
   pause
   exit /b 1
