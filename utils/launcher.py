@@ -1278,14 +1278,3 @@ if __name__ == "__main__":
         sys.exit(main())
     except KeyboardInterrupt:
         sys.exit(130)
-
-
-
-    try:
-        if os.name == "nt":
-            subprocess.run(["taskkill", "/F", "/PID", str(proc.pid)])
-        else:
-            os.kill(proc.pid, 15)
-    except Exception:
-        pass
-    return None
