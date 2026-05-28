@@ -31,6 +31,7 @@ Anthropic /v1/messages (stream=true) шлёт:
 from __future__ import annotations
 
 import json
+import re
 import time
 import uuid
 from typing import Any, AsyncIterator, Iterator
@@ -42,6 +43,80 @@ def sse(event: str, data: dict[str, Any]) -> str:
 
 def new_message_id() -> str:
     return "msg_" + uuid.uuid4().hex[:24]
+
+
+class ToolCallTagParser:
+    OPEN_RE = re.compile(r'<zo:call\b([^>]*)>', re.DOTALL)
+    CLOSE_RE = re.compile(r'</zo:call>')
+    ATTR_RE = re.compile(r'(\w+)\s*=\s*"([^"]*)"')
+    OPEN_PARTIAL = '<zo:call'
+    CLOSE_PARTIAL = '</zo:call>'
+
+    def __init__(self) -> None:
+        self.buf = ''
+        self.in_call = False
+        self._cur_name = ''
+        self._cur_id = ''
+
+    @staticmethod
+    def _safe_text_len(buf: str, marker: str) -> int:
+        n = len(buf)
+        m = len(marker)
+        max_suffix = min(n, m - 1)
+        for k in range(max_suffix, 0, -1):
+            if buf.endswith(marker[:k]):
+                return n - k
+        return n
+
+    def feed(self, text: str):
+        if not text:
+            return
+        self.buf += text
+        while True:
+            if not self.in_call:
+                m = self.OPEN_RE.search(self.buf)
+                if m:
+                    if m.start() > 0:
+                        yield ('text', self.buf[:m.start()])
+                    attrs = dict(self.ATTR_RE.findall(m.group(1)))
+                    self._cur_name = attrs.get('name', 'unknown')
+                    self._cur_id = attrs.get('id') or ('toolu_' + uuid.uuid4().hex[:24])
+                    self.buf = self.buf[m.end():]
+                    self.in_call = True
+                    yield ('tool_open', {'name': self._cur_name, 'id': self._cur_id})
+                else:
+                    safe = self._safe_text_len(self.buf, self.OPEN_PARTIAL)
+                    if safe > 0:
+                        yield ('text', self.buf[:safe])
+                        self.buf = self.buf[safe:]
+                    return
+            else:
+                m = self.CLOSE_RE.search(self.buf)
+                if m:
+                    inner = self.buf[:m.start()]
+                    if inner:
+                        yield ('tool_args', inner)
+                    yield ('tool_close', None)
+                    self.buf = self.buf[m.end():]
+                    self.in_call = False
+                else:
+                    safe = self._safe_text_len(self.buf, self.CLOSE_PARTIAL)
+                    if safe > 0:
+                        yield ('tool_args', self.buf[:safe])
+                        self.buf = self.buf[safe:]
+                    return
+
+    def finalize(self):
+        if self.in_call:
+            if self.buf:
+                yield ('tool_args', self.buf)
+            yield ('tool_close', None)
+            self.in_call = False
+            self.buf = ''
+        elif self.buf:
+            yield ('text', self.buf)
+            self.buf = ''
+
 
 
 class AnthropicStreamTranslator:
@@ -58,18 +133,46 @@ class AnthropicStreamTranslator:
             yield chunk
     """
 
-    def __init__(self, model: str) -> None:
+    def __init__(self, model: str = "claude-opus-4-7") -> None:
         self.model = model
-        self.message_id = new_message_id()
-        # анто
-        self.current_block_index = -1
-        self.current_block_kind: str | None = None  # "text" | "thinking" | "tool_use"
-        self.output_tokens_est = 0
-        self.stop_reason = "end_turn"
+        self.message_id = "msg_" + uuid.uuid4().hex[:24]
         self.started = False
         self.closed = False
-        # для tool_use — копим аргументы и отправляем дельтами
-        self._tool_buf: str = ""
+        self.current_block_index = -1
+        self.current_block_kind: str | None = None
+        self.output_tokens_est = 0
+        self.stop_reason = "end_turn"
+        self._tool_buf = ""
+        self.tool_parser = ToolCallTagParser()
+        self._tool_block_open = False
+
+    def _handle_streamed_text(self, text: str) -> Iterator[str]:
+        for kind, payload in self.tool_parser.feed(text):
+            if kind == 'text':
+                if self.current_block_kind != "text":
+                    yield from self._open_block("text")
+                yield from self._delta_text(payload)
+            elif kind == 'tool_open':
+                yield from self._open_block("tool_use", tool_name=payload['name'], tool_id=payload['id'])
+                self._tool_block_open = True
+            elif kind == 'tool_args':
+                yield from self._delta_tool_input(payload)
+            elif kind == 'tool_close':
+                pass
+
+    def _flush_parser(self) -> Iterator[str]:
+        for kind, payload in self.tool_parser.finalize():
+            if kind == 'text':
+                if self.current_block_kind != "text":
+                    yield from self._open_block("text")
+                yield from self._delta_text(payload)
+            elif kind == 'tool_open':
+                yield from self._open_block("tool_use", tool_name=payload['name'], tool_id=payload['id'])
+                self._tool_block_open = True
+            elif kind == 'tool_args':
+                yield from self._delta_tool_input(payload)
+            elif kind == 'tool_close':
+                pass
 
     # ---------------- lifecycle ----------------
 
@@ -102,6 +205,7 @@ class AnthropicStreamTranslator:
     def finish(self) -> Iterator[str]:
         if self.closed:
             return
+        yield from self._flush_parser()
         # закрыть открытый блок если есть
         if self.current_block_kind is not None:
             yield sse(
@@ -236,16 +340,9 @@ class AnthropicStreamTranslator:
             if kind in ("thinking",):
                 # Claude Code обычно не запрашивает thinking — отдаём как обычный текст,
                 # чтобы Claude Code не падал. Можно вырубить через config.HIDE_THINKING.
-                yield from self._open_block("text")
-                # Если в start уже есть content — отдадим дельтой
-                initial = part.get("content") or ""
-                if initial:
-                    yield from self._delta_text(initial)
+                yield from self._handle_streamed_text(part.get("content") or "")
             elif kind == "text":
-                yield from self._open_block("text")
-                initial = part.get("content") or ""
-                if initial:
-                    yield from self._delta_text(initial)
+                yield from self._handle_streamed_text(part.get("content") or "")
             elif kind in ("tool_call", "tool_use"):
                 tool_name = part.get("tool_name") or part.get("name") or "tool"
                 tool_id = part.get("tool_call_id") or part.get("id") or ""
@@ -263,17 +360,11 @@ class AnthropicStreamTranslator:
             dkind = delta.get("part_delta_kind")
             if dkind == "text":
                 text = delta.get("content_delta") or ""
-                if self.current_block_kind != "text":
-                    yield from self._open_block("text")
-                if text:
-                    yield from self._delta_text(text)
+                yield from self._handle_streamed_text(text)
             elif dkind == "thinking":
                 text = delta.get("content_delta") or ""
                 # см. выше — рендерим thinking как текст
-                if self.current_block_kind != "text":
-                    yield from self._open_block("text")
-                if text:
-                    yield from self._delta_text(text)
+                yield from self._handle_streamed_text(text)
             elif dkind in ("tool_call", "tool_use", "args"):
                 partial = delta.get("args_delta") or delta.get("content_delta") or ""
                 if self.current_block_kind != "tool_use":

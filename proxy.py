@@ -156,8 +156,11 @@ def _stringify_content(content: Any) -> str:
             parts.append(block.get("text", ""))
         elif t == "tool_use":
             name = block.get("name", "?")
+            tid = block.get("id") or block.get("tool_use_id") or "?"
             args = block.get("input", {})
-            parts.append(f"\n<tool_use name=\"{name}\">{json.dumps(args, ensure_ascii=False)}</tool_use>\n")
+            parts.append(
+                f'\n<zo:call name="{name}" id="{tid}">{json.dumps(args, ensure_ascii=False)}</zo:call>\n'
+            )
         elif t == "tool_result":
             content_inner = block.get("content")
             tid = block.get("tool_use_id", "?")
@@ -168,7 +171,7 @@ def _stringify_content(content: Any) -> str:
                 )
             else:
                 text = str(content_inner)
-            parts.append(f"\n<tool_result id=\"{tid}\">{text}</tool_result>\n")
+            parts.append(f'\n<zo:result id="{tid}">{text}</zo:result>\n')
         elif t == "image":
             parts.append("[image attachment elided]")
         elif t == "thinking":
@@ -198,16 +201,17 @@ def _stringify_openai_content(content: Any) -> str:
             parts.append(f"[image attachment elided: {image_url or 'inline'}]")
         elif t in ("tool_call", "function_call"):
             name = block.get("name") or block.get("function", {}).get("name") or "tool"
+            tid = block.get("id") or block.get("call_id") or block.get("tool_call_id") or "?"
             args = block.get("arguments") or block.get("input") or {}
             if not isinstance(args, str):
                 args = json.dumps(args, ensure_ascii=False)
-            parts.append(f"\n<tool_use name=\"{name}\">{args}</tool_use>\n")
+            parts.append(f'\n<zo:call name="{name}" id="{tid}">{args}</zo:call>\n')
         elif t in ("tool_result", "function_call_output"):
             call_id = block.get("call_id") or block.get("tool_call_id") or "?"
             output = block.get("output") or block.get("content") or ""
             if isinstance(output, list):
                 output = "\n".join(_stringify_openai_content([item]) for item in output)
-            parts.append(f"\n<tool_result id=\"{call_id}\">{output}</tool_result>\n")
+            parts.append(f'\n<zo:result id="{call_id}">{output}</zo:result>\n')
         else:
             parts.append(str(block))
     return "".join(parts)
@@ -232,15 +236,30 @@ def _flatten_messages(
     if tools:
         chunks.append("=== AVAILABLE CLIENT TOOLS ===")
         chunks.append(
-            "У клиента (Claude Code) есть локальные инструменты. "
-            "Когда тебе нужно их вызвать, отвечай ТЕКСТОМ с инструкцией — "
-            "клиент сам решит, какой тул использовать. НЕ пытайся выполнять "
-            "файловые/системные операции у себя на сервере — это машина клиента."
+            "The user is running you behind a local proxy. Tools below execute "
+            "ON THEIR MACHINE (Claude Code / Codex / OpenCode). To call a tool, "
+            "emit EXACTLY ONE tag and STOP:\n"
+            '  <zo:call name="ToolName" id="call_abc123">{"arg":"value"}</zo:call>\n'
+            "Rules:\n"
+            " * the `id` is your own short unique string (call_xxxx)\n"
+            " * the body MUST be a single JSON object, no commentary inside\n"
+            " * one call per turn — wait for <zo:result id=\"call_abc123\">...</zo:result>\n"
+            "   to come back in the next user message before calling again\n"
+            " * never invent file paths — start by listing the directory if unsure\n"
+            " * the user is in a real folder on their machine; you do NOT have a sandbox"
         )
         for t in tools[:50]:
             name = t.get("name", "?")
-            desc = (t.get("description") or "").strip().split("\n")[0][:160]
-            chunks.append(f"- {name}: {desc}")
+            desc = (t.get("description") or "").strip()
+            schema = t.get("input_schema") or t.get("inputSchema") or {}
+            chunks.append("")
+            chunks.append(f"### {name}")
+            if desc:
+                chunks.append(desc.split("\n\n")[0][:600])
+            try:
+                chunks.append("input schema: " + json.dumps(schema, ensure_ascii=False)[:1200])
+            except Exception:
+                pass
         chunks.append("")
 
     # сообщения
@@ -269,15 +288,36 @@ def _flatten_openai_messages(
     if tools:
         chunks.append("=== AVAILABLE CLIENT TOOLS ===")
         chunks.append(
-            "У клиента есть локальные инструменты. Если нужен вызов инструмента, "
-            "опиши его текстом и не пытайся выполнять локальные действия на сервере прокси."
+            "The user is running you behind a local proxy. Tools below execute "
+            "ON THEIR MACHINE. To call a tool, emit EXACTLY ONE tag and STOP:\n"
+            '  <zo:call name="ToolName" id="call_abc123">{"arg":"value"}</zo:call>\n'
+            "Rules:\n"
+            " * the `id` is your own short unique string\n"
+            " * body MUST be a single JSON object, no commentary inside\n"
+            " * one call per turn — wait for <zo:result id=\"call_abc123\">...</zo:result>\n"
+            "   in the next user message before the next call\n"
+            " * never invent file paths — list the directory first if unsure"
         )
         for t in tools[:50]:
             if not isinstance(t, dict):
                 continue
             name = t.get("name") or t.get("function", {}).get("name") or "?"
-            desc = (t.get("description") or t.get("function", {}).get("description") or "").strip().split("\n")[0][:160]
-            chunks.append(f"- {name}: {desc}")
+            desc = (t.get("description") or t.get("function", {}).get("description") or "").strip()
+            schema = (
+                t.get("input_schema")
+                or t.get("inputSchema")
+                or t.get("parameters")
+                or t.get("function", {}).get("parameters")
+                or {}
+            )
+            chunks.append("")
+            chunks.append(f"### {name}")
+            if desc:
+                chunks.append(desc.split("\n\n")[0][:600])
+            try:
+                chunks.append("input schema: " + json.dumps(schema, ensure_ascii=False)[:1200])
+            except Exception:
+                pass
         chunks.append("")
     for m in messages:
         role = (m.get("role") or "user").lower()
