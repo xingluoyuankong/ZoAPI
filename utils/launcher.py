@@ -106,16 +106,16 @@ LANGS = {
         "col_domain": "Domain",
         "col_ttl": "TTL",
         "col_state": "Статус",
-        "state_ok": "АКТИВЕН",
-        "state_err": "ОШИБКА",
-        "state_off": "НЕАКТИВЕН",
+        "state_ok": "Активен",
+        "state_err": "Ошибка",
+        "state_off": "Неактивен",
         "empty_accounts": "пока нет аккаунтов",
     },
     "en": {
         "app_name": "ZoAPI",
-        "subtitle": "local api for Zo Computer",
+        "subtitle": "Local API for Zo Computer",
         "starting": "starting local api",
-        "running": "local api is running",
+        "running": "API is running",
         "proxy_start": "Starting local API...",
         "proxy_on": "Online",
         "proxy_off": "Offline",
@@ -177,9 +177,9 @@ LANGS = {
         "col_domain": "Domain",
         "col_ttl": "TTL",
         "col_state": "State",
-        "state_ok": "ACTIVE",
-        "state_err": "ERROR",
-        "state_off": "INACTIVE",
+        "state_ok": "Active",
+        "state_err": "Error",
+        "state_off": "Inactive",
         "empty_accounts": "no accounts yet",
     },
 }
@@ -332,7 +332,7 @@ async def fetch_account_health(account: Account) -> tuple[int | None, int]:
 
 def header_panel(state: dict, running: bool) -> Panel:
     status = tr(state, "running") if running else tr(state, "starting")
-    status_style = "#b7e4c7" if running else "#e9d8a6"
+    status_style = "#34d399" if running else "#fbbf24"
     group = Group(
         Align.center(Text(tr(state, "app_name"), style="bold #f5f3ff")),
         Align.center(Text(tr(state, "subtitle"), style="#ddd6fe")),
@@ -343,10 +343,10 @@ def header_panel(state: dict, running: bool) -> Panel:
 
 def status_style_and_text(state: dict, acc: Account) -> tuple[str, str]:
     if acc.disabled:
-        return "#f4b7b7", tr(state, "state_off")
+        return "#fb7185", tr(state, "state_off")
     if acc.error_streak:
-        return "#f4b7b7", tr(state, "state_err")
-    return "#b7e4c7", tr(state, "state_ok")
+        return "#fb7185", tr(state, "state_err")
+    return "#34d399", tr(state, "state_ok")
 
 
 def accounts_table(state: dict, store: AccountStore) -> Table:
@@ -383,7 +383,7 @@ def bottom_bar(state: dict, store: AccountStore, proxy_ok: bool) -> Panel:
     active = store.active_label or "-"
     text = Text()
     text.append("API: ", style="bold #f5f3ff")
-    text.append(tr(state, "proxy_on") if proxy_ok else tr(state, "proxy_off"), style="#b7e4c7" if proxy_ok else "#f4b7b7")
+    text.append(tr(state, "proxy_on") if proxy_ok else tr(state, "proxy_off"), style="#34d399" if proxy_ok else "#fb7185")
     text.append(f"   {tr(state, 'accounts')}: {usable}/{total}", style="#a78bfa")
     text.append(f"   {tr(state, 'mode')}: {mode}", style="#a78bfa")
     text.append(f"   {tr(state, 'active')}: {active}", style="#a78bfa")
