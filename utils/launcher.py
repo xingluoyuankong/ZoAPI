@@ -243,25 +243,81 @@ def proxy_running() -> bool:
         return False
 
 
+def _proxy_python_candidates() -> list[str]:
+    cands: list[str] = []
+    cands.append(sys.executable)
+    if os.name == "nt":
+        win = ROOT / ".venv" / "Scripts" / "python.exe"
+        if win.exists():
+            cands.append(str(win))
+    else:
+        unix = ROOT / ".venv" / "bin" / "python"
+        if unix.exists():
+            cands.append(str(unix))
+    seen: set[str] = set()
+    out: list[str] = []
+    for c in cands:
+        if c and c not in seen:
+            seen.add(c)
+            out.append(c)
+    return out
+
+
+def _spawn_proxy_with(python_exe: str) -> bool:
+    try:
+        logf = LOG_FILE.open("ab")
+    except Exception:
+        return False
+    try:
+        kwargs: dict[str, Any] = {
+            "cwd": str(ROOT),
+            "stdin": subprocess.DEVNULL,
+            "stdout": logf,
+            "stderr": logf,
+            "close_fds": True,
+        }
+        if os.name == "nt":
+            kwargs["creationflags"] = 0x08000000  # CREATE_NO_WINDOW
+        else:
+            kwargs["start_new_session"] = True
+        proc = subprocess.Popen([python_exe, str(ROOT / "proxy.py")], **kwargs)
+    except Exception as e:
+        try:
+            LOG_FILE.write_bytes((f"\n[launcher] spawn failed for {python_exe}: {e}\n").encode("utf-8"))
+        except Exception:
+            pass
+        return False
+    finally:
+        try:
+            logf.close()
+        except Exception:
+            pass
+    try:
+        PID_FILE.write_text(str(proc.pid), encoding="utf-8")
+    except Exception:
+        pass
+    for _ in range(40):
+        if proc.poll() is not None:
+            return False
+        if proxy_running():
+            return True
+        time.sleep(0.1)
+    return proxy_running()
+
+
 def start_proxy() -> bool:
     if proxy_running():
         return True
-    cmd = [sys.executable, "proxy.py"]
-    kwargs: dict[str, Any] = {"cwd": ROOT, "stdin": subprocess.DEVNULL}
-    if os.name == "nt":
-        kwargs["creationflags"] = 0x00000008 | 0x00000200
-    else:
-        kwargs["start_new_session"] = True
-    try:
-        with LOG_FILE.open("ab") as logf:
-            proc = subprocess.Popen(cmd, stdout=logf, stderr=logf, **kwargs)
-        PID_FILE.write_text(str(proc.pid), encoding="utf-8")
-    except Exception:
-        return False
-    for _ in range(20):
-        if proxy_running():
+    last_err: str = ""
+    for py in _proxy_python_candidates():
+        if _spawn_proxy_with(py):
             return True
-        time.sleep(0.2)
+        last_err = py
+    if last_err:
+        try:
+            LOG_FILE.write_bytes((f"\n[launcher] all spawn attempts failed; last python={last_err}\n").encode("utf-8"))
+        except Exception:
+            pass
     return False
 
 
