@@ -1,0 +1,43 @@
+# Чтобы образ не пух и пользовательские артефакты не попадали внутрь.
+
+.git
+.gitignore
+.gitattributes
+
+# Локальный venv — НЕ нужен в образе
+.venv
+venv
+env
+
+# Кеш питона
+__pycache__
+*.pyc
+*.pyo
+*.pyd
+*.egg-info
+
+# IDE / OS
+.idea
+.vscode
+.DS_Store
+Thumbs.db
+
+# Документация / лаунчер-only / setup-only — в образе живёт только proxy
+README.md
+docs.md
+LICENSE
+setup.bat
+setup.sh
+run.bat
+run.sh
+docker_run.bat
+docker_run.sh
+Dockerfile
+.dockerignore
+utils/
+
+# Чувствительные / runtime — пробрасываются volume-маунтом, не COPY
+accounts.json
+accounts.json.bak
+runtime.json
+*.log
