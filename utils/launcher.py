@@ -23,6 +23,7 @@ from playwright.sync_api import sync_playwright
 from questionary import Choice, Separator
 from rich.align import Align
 from rich.console import Console, Group
+from rich import box
 from rich.panel import Panel
 from rich.table import Table
 from rich.text import Text
@@ -227,11 +228,11 @@ def ui_style() -> questionary.Style:
     return questionary.Style(
         [
             ("qmark", "fg:#84cc16 bold"),
-            ("question", "bold fg:#f0fdf4"),
+            ("question", "bold fg:#faf5ff"),
             ("answer", "fg:#bbf7d0 bold"),
             ("pointer", "fg:#a3e635 bold"),
             ("highlighted", "fg:#f7fee7 bg:#3f6212 bold"),
-            ("selected", "fg:#d9f99d bold"),
+            ("selected", "fg:#ddd6fe bold"),
             ("instruction", "fg:#dcfce7"),
             ("separator", "fg:#bef264"),
             ("disabled", "fg:#9ca3af italic"),
@@ -278,7 +279,7 @@ def ensure_playwright_chromium(state: dict) -> bool:
         needs = True
     if not needs:
         return True
-    console.print(f"[green]{glyphs()['run']} {tr(state, 'install_chromium')}[/green]")
+    console.print(f"[bright_magenta]{glyphs()['run']} {tr(state, 'install_chromium')}[/bright_magenta]")
     r = subprocess.run([sys.executable, "-m", "playwright", "install", "chromium"], cwd=ROOT)
     return r.returncode == 0
 
@@ -325,15 +326,15 @@ async def refresh_store_health(store: AccountStore) -> None:
 
 
 def header_panel(state: dict, running: bool) -> Panel:
-    title = Text(tr(state, "app_name"), style="bold green")
+    title = Text(tr(state, "app_name"), style="bold bright_magenta")
     subtitle = Text(tr(state, "subtitle"), style="bold white")
-    status = Text(tr(state, "running") if running else tr(state, "starting"), style="green" if running else "yellow")
+    status = Text(tr(state, "running") if running else tr(state, "starting"), style="bright_magenta" if running else "yellow")
     group = Group(Align.center(title), Align.center(subtitle), Align.center(status))
-    return Panel(group, border_style="green", padding=(1, 2))
+    return Panel(group, border_style="bright_magenta", padding=(1, 2))
 
 
 def accounts_table(state: dict, store: AccountStore) -> Table:
-    table = Table(expand=True, box=Table.box.SIMPLE_HEAVY)
+    table = Table(expand=True, box=box.SIMPLE_HEAVY)
     table.add_column(tr(state, "col_index"), width=4, justify="center")
     table.add_column(tr(state, "col_label"), width=14, overflow="fold")
     table.add_column(tr(state, "col_email"), width=28, overflow="fold")
@@ -354,7 +355,7 @@ def accounts_table(state: dict, store: AccountStore) -> Table:
 
 def api_panel(state: dict) -> Panel:
     lines = Table.grid(padding=(0, 2))
-    lines.add_column(style="green", width=18)
+    lines.add_column(style="bright_magenta", width=18)
     lines.add_column(style="white")
     lines.add_row("Anthropic", "POST /v1/messages")
     lines.add_row("OpenAI", "POST /v1/chat/completions")
@@ -362,12 +363,12 @@ def api_panel(state: dict) -> Panel:
     lines.add_row("OpenAI", "WS   /v1/responses")
     lines.add_row(tr(state, "api_common"), "GET /v1/models   GET /health")
     lines.add_row(tr(state, "base_url"), API_BASE_URL)
-    return Panel(lines, title=tr(state, "api_title"), border_style="green")
+    return Panel(lines, title=tr(state, "api_title"), border_style="bright_magenta")
 
 
 def setup_panel(state: dict) -> Panel:
     body = Text(tr(state, "manual_setup", api=API_BASE_URL, proxy=PROXY_URL), style="white")
-    return Panel(body, title=tr(state, "client_title"), border_style="green")
+    return Panel(body, title=tr(state, "client_title"), border_style="bright_magenta")
 
 
 def bottom_bar(state: dict, store: AccountStore, proxy_ok: bool) -> Panel:
@@ -377,7 +378,7 @@ def bottom_bar(state: dict, store: AccountStore, proxy_ok: bool) -> Panel:
     active = store.active_label or "-"
     text = Text()
     text.append(f"API: ", style="bold white")
-    text.append(tr(state, "proxy_on") if proxy_ok else tr(state, "proxy_off"), style="green" if proxy_ok else "red")
+    text.append(tr(state, "proxy_on") if proxy_ok else tr(state, "proxy_off"), style="bright_magenta" if proxy_ok else "red")
     text.append("   ")
     text.append(f"{tr(state, 'accounts')}: {usable}/{total}", style="white")
     text.append("   ")
@@ -385,14 +386,14 @@ def bottom_bar(state: dict, store: AccountStore, proxy_ok: bool) -> Panel:
     text.append("   ")
     text.append(f"{tr(state, 'active')}: {active}", style="white")
     text.append("   ")
-    text.append(tr(state, "footer"), style="green")
-    return Panel(text, border_style="green", padding=(0, 1))
+    text.append(tr(state, "footer"), style="bright_magenta")
+    return Panel(text, border_style="bright_magenta", padding=(0, 1))
 
 
 def draw_dashboard(state: dict, store: AccountStore, running: bool) -> None:
     console.clear()
     console.print(header_panel(state, running))
-    console.print(Panel(accounts_table(state, store), title=tr(state, "table_title"), border_style="#b7c9a8", padding=(0, 1)))
+    console.print(Panel(accounts_table(state, store), title=tr(state, "table_title"), border_style="#b8a7d9", padding=(0, 1)))
     console.print(bottom_bar(state, store, running))
 
 
@@ -447,13 +448,13 @@ def add_account_manual(state: dict, store: AccountStore) -> None:
     acc.balance_checked_at = time.time()
     store.add(acc, make_active=not store.accounts or prompt_confirm(state, tr(state, "make_active"), True))
     bal_text = "?" if balance is None else f"${balance / 100:.2f}"
-    console.print(Panel(f"{tr(state, 'saved')}\nlabel: {label}\n{tr(state, 'balance')}: {bal_text}\nmodels: {models}", border_style="green"))
+    console.print(Panel(f"{tr(state, 'saved')}\nlabel: {label}\n{tr(state, 'balance')}: {bal_text}\nmodels: {models}", border_style="bright_magenta"))
     pause(state)
 
 
 def add_account_via_browser(state: dict, store: AccountStore) -> None:
     console.clear()
-    console.print(Panel(tr(state, "auth_body"), title=tr(state, "auth_title"), border_style="green"))
+    console.print(Panel(tr(state, "auth_body"), title=tr(state, "auth_title"), border_style="bright_magenta"))
     if not ensure_playwright_chromium(state):
         console.print(f"[red]{glyphs()['err']} {tr(state, 'auth_fail')}[/red]")
         pause(state)
@@ -508,7 +509,7 @@ def add_account_via_browser(state: dict, store: AccountStore) -> None:
     if not domain:
         return
     acc = Account(label=label, domain=domain.strip(), access_token=access, refresh_token=refresh, added_at=dt.datetime.now(dt.timezone.utc).isoformat())
-    console.print(f"[green]{glyphs()['run']} {tr(state, 'verify')}[/green]")
+    console.print(f"[bright_magenta]{glyphs()['run']} {tr(state, 'verify')}[/bright_magenta]")
     try:
         balance, models = asyncio.run(fetch_account_health(acc))
     except Exception as e:
@@ -521,7 +522,7 @@ def add_account_via_browser(state: dict, store: AccountStore) -> None:
     acc.balance_checked_at = time.time()
     store.add(acc, make_active=not store.accounts or prompt_confirm(state, tr(state, "make_active"), True))
     bal_text = "?" if balance is None else f"${balance / 100:.2f}"
-    console.print(Panel(f"{tr(state, 'saved')}\nlabel: {label}\nemail: {acc.email() or '?'}\ndomain: {acc.domain}\n{tr(state, 'balance')}: {bal_text}\nmodels: {models}", border_style="green"))
+    console.print(Panel(f"{tr(state, 'saved')}\nlabel: {label}\nemail: {acc.email() or '?'}\ndomain: {acc.domain}\n{tr(state, 'balance')}: {bal_text}\nmodels: {models}", border_style="bright_magenta"))
     pause(state)
 
 
@@ -575,20 +576,20 @@ def accounts_menu(state: dict, store: AccountStore) -> None:
             if label and prompt_confirm(state, tr(state, "delete_confirm", label=label), False):
                 store.remove(label)
         elif action == "refresh":
-            console.print(f"[green]{glyphs()['run']} {tr(state, 'refreshing')}[/green]")
+            console.print(f"[bright_magenta]{glyphs()['run']} {tr(state, 'refreshing')}[/bright_magenta]")
             asyncio.run(refresh_store_health(store))
             pause(state)
 
 
 def show_setup_examples(state: dict) -> None:
     console.clear()
-    console.print(Panel(tr(state, "manual_setup", api=API_BASE_URL, proxy=PROXY_URL), title=tr(state, "manual_setup_title"), border_style="green"))
+    console.print(Panel(tr(state, "manual_setup", api=API_BASE_URL, proxy=PROXY_URL), title=tr(state, "manual_setup_title"), border_style="bright_magenta"))
     pause(state)
 
 
 def open_docs(state: dict) -> None:
     webbrowser.open("https://github.com/UvenaliyS/ZoAPI/blob/main/docs.md")
-    console.print(f"[green]{glyphs()['ok']} {tr(state, 'docs_opened')}[/green]")
+    console.print(f"[bright_magenta]{glyphs()['ok']} {tr(state, 'docs_opened')}[/bright_magenta]")
     pause(state)
 
 
@@ -612,7 +613,7 @@ def main() -> int:
     store = AccountStore()
     console.clear()
     console.print(header_panel(state, False))
-    console.print(f"[green]{glyphs()['run']} {tr(state, 'proxy_start')}[/green]")
+    console.print(f"[bright_magenta]{glyphs()['run']} {tr(state, 'proxy_start')}[/bright_magenta]")
     start_proxy()
     if store.accounts:
         try:
@@ -640,7 +641,7 @@ def main() -> int:
         state["last_action"] = choice
         save_state(state)
         if choice == "refresh":
-            console.print(f"[green]{glyphs()['run']} {tr(state, 'refreshing')}[/green]")
+            console.print(f"[bright_magenta]{glyphs()['run']} {tr(state, 'refreshing')}[/bright_magenta]")
             if store.accounts:
                 asyncio.run(refresh_store_health(store))
         elif choice == "accounts":
