@@ -40,7 +40,7 @@ console = Console(highlight=False)
 
 LANGS = {
     "ru": {
-        "boot": "запуск",
+        "boot": "локальный API для Zo Computer",
         "proxy_start": "Запускаю локальный API...",
         "proxy_fail": "Не удалось поднять локальный API.",
         "running": "локальный api работает",
@@ -54,7 +54,7 @@ LANGS = {
         "refresh": "Обновить статус",
         "accounts_menu": "Аккаунты",
         "setup_examples": "Показать ручную настройку",
-        "docs": "Открыть доки Zo API",
+        "docs": "Открыть документацию ZoAPI",
         "exit": "Выход",
         "account_actions": "Действия с аккаунтами",
         "add_browser": "Добавить аккаунт через временный браузер",
@@ -90,9 +90,9 @@ LANGS = {
         "refreshing": "Обновляю статус аккаунтов...",
         "manual_setup_title": "как подключить приложения вручную",
         "manual_setup": "OpenAI-compatible приложения:\n  Base URL: {api}\n  API key:  zo-proxy\n\nAnthropic-compatible приложения:\n  Base URL: {proxy}\n  API key / token: zo-proxy\n  endpoint: /v1/messages",
-        "docs_opened": "Документация Zo API открыта в браузере.",
+        "docs_opened": "Документация ZoAPI открыта в браузере.",
         "footer": "Стрелки: выбор • Enter: открыть • Локальный API работает, пока открыто это окно",
-        "api_title": "api роуты",
+        "api_title": "API routes",
         "client_title": "ручная настройка",
         "api_common": "Общее",
         "base_url": "База URL",
@@ -126,7 +126,7 @@ LANGS = {
         "refresh": "Refresh status",
         "accounts_menu": "Accounts",
         "setup_examples": "Show manual setup",
-        "docs": "Open Zo API docs",
+        "docs": "Open ZoAPI documentation",
         "exit": "Exit",
         "account_actions": "Account actions",
         "add_browser": "Add account via temporary browser",
@@ -162,9 +162,9 @@ LANGS = {
         "refreshing": "Refreshing account status...",
         "manual_setup_title": "manual client setup",
         "manual_setup": "OpenAI-compatible apps:\n  Base URL: {api}\n  API key:  zo-proxy\n\nAnthropic-compatible apps:\n  Base URL: {proxy}\n  API key / token: zo-proxy\n  endpoint: /v1/messages",
-        "docs_opened": "Zo API docs opened in browser.",
+        "docs_opened": "ZoAPI documentation opened in browser.",
         "footer": "Arrows: move • Enter: open • Local API stays up while this window is open",
-        "api_title": "api routes",
+        "api_title": "API routes",
         "client_title": "manual setup",
         "api_common": "Common",
         "base_url": "Base URL",
@@ -212,15 +212,15 @@ def tr(state: dict, key: str, **kwargs: Any) -> str:
 def ui_style() -> questionary.Style:
     return questionary.Style(
         [
-            ("qmark", "fg:#94a3b8 bold"),
+            ("qmark", "fg:#84cc16 bold"),
             ("question", "bold fg:#f0fdf4"),
             ("answer", "fg:#bbf7d0 bold"),
-            ("pointer", "fg:#86efac bold"),
-            ("highlighted", "fg:#f0fdf4 bg:#365314 bold"),
+            ("pointer", "fg:#a3e635 bold"),
+            ("highlighted", "fg:#f7fee7 bg:#3f6212 bold"),
             ("selected", "fg:#d9f99d bold"),
-            ("instruction", "fg:#d1fae5"),
-            ("separator", "fg:#86efac"),
-            ("disabled", "fg:#6b7280 italic"),
+            ("instruction", "fg:#dcfce7"),
+            ("separator", "fg:#bef264"),
+            ("disabled", "fg:#9ca3af italic"),
         ]
     )
 
@@ -310,23 +310,23 @@ async def refresh_store_health(store: AccountStore) -> None:
         store.save()
 
 
-def header_panel(state: dict, proxy_ok: bool) -> Panel:
+def header_panel(state: dict, running: bool) -> Panel:
     title = Text(tr(state, "app_name"), style="bold green")
     subtitle = Text(tr(state, "subtitle"), style="bold white")
-    status = Text(tr(state, "running") if proxy_ok else tr(state, "starting"), style="green" if proxy_ok else "yellow")
+    status = Text(tr(state, "running") if running else tr(state, "starting"), style="green" if running else "yellow")
     group = Group(Align.center(title), Align.center(subtitle), Align.center(status))
     return Panel(group, border_style="green", padding=(1, 2))
 
 
 def accounts_table(state: dict, store: AccountStore) -> Table:
-    table = Table(show_header=True, header_style="bold white", border_style="green", expand=True)
+    table = Table(expand=True, box=Table.box.SIMPLE_HEAVY)
     table.add_column("*", width=3, justify="center")
-    table.add_column("label", style="green", min_width=10)
-    table.add_column("email", style="white", min_width=20)
-    table.add_column("domain", style="bright_green", min_width=12)
-    table.add_column("ttl", style="yellow", width=7)
-    table.add_column(tr(state, "balance"), style="white", width=10, justify="right")
-    table.add_column("state", style="white", width=10)
+    table.add_column("Label", width=12, overflow="fold")
+    table.add_column("Email", width=24, overflow="fold")
+    table.add_column("Domain", width=16, overflow="fold")
+    table.add_column("TTL", width=7, justify="center")
+    table.add_column(tr(state, "balance"), width=12, justify="right")
+    table.add_column("State", width=12, overflow="fold")
     if not store.accounts:
         table.add_row("", "—", tr(state, "empty_accounts"), "—", "—", "—", "—")
         return table
@@ -375,13 +375,11 @@ def bottom_bar(state: dict, store: AccountStore, proxy_ok: bool) -> Panel:
     return Panel(text, border_style="green", padding=(0, 1))
 
 
-def draw_dashboard(state: dict, store: AccountStore, proxy_ok: bool) -> None:
+def draw_dashboard(state: dict, store: AccountStore, running: bool) -> None:
     console.clear()
-    console.print(header_panel(state, proxy_ok))
-    console.print(accounts_table(state, store))
-    console.print(api_panel(state))
-    console.print(setup_panel(state))
-    console.print(bottom_bar(state, store, proxy_ok))
+    console.print(header_panel(state, running))
+    console.print(Panel(accounts_table(state, store), title=tr(state, "table_title"), border_style="#b7c9a8", padding=(0, 1)))
+    console.print(bottom_bar(state, store, running))
 
 
 def select_menu(state: dict, message: str, choices: list[Any], default: str | None = None):
@@ -575,7 +573,7 @@ def show_setup_examples(state: dict) -> None:
 
 
 def open_docs(state: dict) -> None:
-    webbrowser.open("https://docs.zocomputer.com/api")
+    webbrowser.open("https://github.com/UvenaliyS/ZoAPI/blob/main/docs.md")
     console.print(f"[green]{glyphs()['ok']} {tr(state, 'docs_opened')}[/green]")
     pause(state)
 

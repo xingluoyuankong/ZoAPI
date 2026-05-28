@@ -166,6 +166,14 @@ class ZoClient:
             grants = r.json()
             if isinstance(grants, list):
                 return sum(g.get("available_cents", 0) for g in grants)
+            if isinstance(grants, dict):
+                for key in ("grants", "credit_grants", "items"):
+                    if key in grants and isinstance(grants[key], list):
+                        return sum(g.get("available_cents", 0) for g in grants[key])
+                if "available_cents" in grants:
+                    return grants["available_cents"]
+                if "remaining_cents" in grants:
+                    return grants["remaining_cents"]
         except Exception:
             pass
         return None
