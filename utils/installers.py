@@ -9,7 +9,8 @@ utils/installers.py — автоматическая прописка ZoAPI в C
 - Codex CLI: ~/.codex/config.toml — корневой ключ `model_provider = "zoapi"`
   и таблица `[model_providers.zoapi]` с маркерами; чужие настройки не трогаем.
 - Claude Code: ~/.claude/settings.json с env-блоком
-  (ANTHROPIC_BASE_URL, ANTHROPIC_AUTH_TOKEN, ANTHROPIC_API_KEY).
+  (ANTHROPIC_BASE_URL, ANTHROPIC_AUTH_TOKEN). ANTHROPIC_API_KEY НЕ ставим:
+  Claude Code ругается «Auth conflict» если выставлены обе переменные.
 - OpenCode: ~/.config/opencode/opencode.json — мержим только `provider.zoapi`,
   остальные провайдеры и настройки сохраняются.
 
@@ -343,9 +344,11 @@ def install_claude() -> list[str]:
         {
             "ANTHROPIC_BASE_URL": PROXY_URL,
             "ANTHROPIC_AUTH_TOKEN": DUMMY_KEY,
-            "ANTHROPIC_API_KEY": DUMMY_KEY,
         }
     )
+    # Claude Code ругается «Auth conflict», если выставлены и ANTHROPIC_AUTH_TOKEN,
+    # и ANTHROPIC_API_KEY. Старые версии лаунчера ставили обе — чистим API_KEY.
+    log.extend(unset_env_vars(["ANTHROPIC_API_KEY"]))
     CLAUDE_DIR.mkdir(parents=True, exist_ok=True)
     data: dict = {}
     if CLAUDE_SETTINGS.exists():
@@ -360,7 +363,7 @@ def install_claude() -> list[str]:
         env = {}
     env["ANTHROPIC_BASE_URL"] = PROXY_URL
     env["ANTHROPIC_AUTH_TOKEN"] = DUMMY_KEY
-    env["ANTHROPIC_API_KEY"] = DUMMY_KEY
+    env.pop("ANTHROPIC_API_KEY", None)
     data["env"] = env
     CLAUDE_SETTINGS.write_text(
         json.dumps(data, indent=2, ensure_ascii=False),
