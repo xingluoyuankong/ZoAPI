@@ -28,7 +28,7 @@ ZO_DEFAULT_MODEL = "zo:anthropic/claude-opus-4-7"
 # идут пассивом — proxy.py сам маршрутизирует их через провайдера по
 # префиксу, поэтому добавлять сюда каждую новую версию НЕ надо.
 MODEL_MAP = {
-    "opus": "zo:anthropic/claude-opus-4-8",
+    "opus": "zo:anthropic/claude-opus-4-7",
     "sonnet": "zo:anthropic/claude-sonnet-4-6",
     "haiku": "zo:anthropic/claude-haiku-4-6",
     "codex": "zo:openai/gpt-5-codex",

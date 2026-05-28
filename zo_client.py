@@ -150,7 +150,7 @@ class ZoClient:
 
     async def list_models(self, account: Account) -> list[dict[str, Any]]:
         r = await self._get(account).get(
-            "/models/available",
+            "/models/",
             headers=_headers_for(account),
             cookies=_cookies_for(account),
         )
@@ -367,6 +367,62 @@ class ZoClient:
             log.warning("[%s] ensure_bridge_persona: verify failed: %s", account.label, e)
 
         return pid
+
+    # ----------------------- API keys -----------------------
+
+    async def list_api_keys(self, account: Account) -> list[dict]:
+        r = await self._get(account).get(
+            "/api-keys/",
+            headers=_headers_for(account),
+            cookies=_cookies_for(account),
+        )
+        _raise_for_status(r)
+        data = r.json()
+        if isinstance(data, list):
+            return data
+        return data.get("api_keys", []) if isinstance(data, dict) else []
+
+    async def create_api_key(self, account: Account, name: str) -> dict[str, Any]:
+        """POST /api-keys/ with {name}. Returns {id, name, key, key_prefix, created_at}."""
+        r = await self._get(account).post(
+            "/api-keys/",
+            json={"name": name},
+            headers=_headers_for(account),
+            cookies=_cookies_for(account),
+        )
+        _raise_for_status(r)
+        return r.json() if r.content else {}
+
+    async def ensure_api_key(self, account: Account, name: str = "zoapi-bridge") -> dict[str, Any] | None:
+        """Гарантирует API-ключ с заданным name на аккаунте.
+        
+        Алгоритм:
+          1. GET /api-keys/ — ищем по name
+          2. Если есть и есть .key — возвращаем
+          3. Если есть но .key скрыт (Zo показывает полный key только при создании) —
+             всё равно возвращаем (мы используем существующий)
+          4. Если нет — POST /api-keys/ с {name}, возвращаем
+        
+        Возвращает {id, key, key_prefix, name, ...} или None при ошибке.
+        """
+        try:
+            keys = await self.list_api_keys(account)
+        except Exception as e:
+            log.warning("[%s] list_api_keys failed: %s", account.label, e)
+            return None
+        match = next((k for k in keys if k.get("name") == name), None)
+        if match:
+            log.info("[%s] ensure_api_key: existing match id=%s prefix=%s",
+                     account.label, match.get("id"), match.get("key_prefix"))
+            return match
+        try:
+            created = await self.create_api_key(account, name)
+            log.info("[%s] ensure_api_key: CREATED id=%s prefix=%s",
+                     account.label, created.get("id"), created.get("key_prefix"))
+            return created
+        except Exception as e:
+            log.exception("[%s] create_api_key failed: %s", account.label, e)
+            return None
 
     async def list_conversations(self, account: Account) -> list[dict[str, Any]]:
         r = await self._get(account).get(

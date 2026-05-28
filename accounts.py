@@ -69,6 +69,8 @@ class Account:
     # эмитить <zo:call> теги для тулов клиента.
     bridge_persona_id: str | None = None
     bridge_persona_checked_at: float | None = None
+    api_key: str | None = None
+    api_key_id: str | None = None
 
     # ------ JWT helpers ------
 
@@ -126,6 +128,8 @@ class Account:
             balance_checked_at=d.get("balance_checked_at"),
             bridge_persona_id=d.get("bridge_persona_id"),
             bridge_persona_checked_at=d.get("bridge_persona_checked_at"),
+            api_key=d.get("api_key"),
+            api_key_id=d.get("api_key_id"),
         )
 
 

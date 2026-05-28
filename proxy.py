@@ -628,11 +628,25 @@ def _version_key(zo_id: str) -> tuple:
     return tuple(int(n) for n in nums)
 
 
+# Хардкод-фоллбеки на случай если /models/ не подгрузился (например пустой
+# _AVAILABLE_IDS из-за сетевой ошибки): известные «следующие» версии
+# раутятся на предыдущие что есть в Zo. Когда Zo добавит — это станет
+# no-op.
+HARDCODED_FALLBACKS: dict[str, str] = {
+    "zo:anthropic/claude-opus-4-8":           "zo:anthropic/claude-opus-4-7",
+    "zo:anthropic/claude-opus-4-8-thinking":  "zo:anthropic/claude-opus-4-7-thinking",
+    "zo:anthropic/claude-sonnet-4-7":         "zo:anthropic/claude-sonnet-4-6",
+    "zo:anthropic/claude-haiku-4-7":          "zo:anthropic/claude-haiku-4-6",
+}
+
+
 def _fallback_in_family(upstream: str) -> str:
     """Если upstream есть у Zo — возвращаем как есть.  Иначе ищем
     ближайшую модель той же семьи (например opus 4-8 -> opus 4-7),
     либо хоть что-то от того же vendor.  Если и этого нет —
     отдаём upstream как есть, пусть Zo сам бросит 4xx."""
+    if upstream in HARDCODED_FALLBACKS:
+        return HARDCODED_FALLBACKS[upstream]
     if not _AVAILABLE_IDS or upstream in _AVAILABLE_IDS:
         return upstream
     family = _model_family(upstream)
