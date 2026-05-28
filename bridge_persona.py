@@ -166,11 +166,13 @@ BRIDGE_RULES: list[dict[str, str]] = [
 
 async def bootstrap_account(client: "ZoClient", account: "Account") -> str | None:
     """
-    Гарантирует, что на этом аккаунте есть bridge-персона. Сохраняет
-    persona_id в Account.bridge_persona_id. Возвращает id или None.
+    Гарантирует, что на этом аккаунте:
+      1) bridge-персона создана с нужным промптом и scopes=[];
+      2) она выставлена активной для канала main;
+      3) BRIDGE_RULES присутствуют как user-rules.
+
+    ВСЁ ВЫЗЫВ
     """
-    if account.bridge_persona_id:
-        return account.bridge_persona_id
     try:
         pid = await client.ensure_bridge_persona(
             account, BRIDGE_PERSONA_NAME, BRIDGE_PERSONA_PROMPT
@@ -196,7 +198,7 @@ async def bootstrap_account(client: "ZoClient", account: "Account") -> str | Non
 
 async def bootstrap_all(client: "ZoClient", store: "AccountStore") -> None:
     """Прогоняем bootstrap по всем usable-аккаунтам параллельно."""
-    targets = [a for a in store.accounts if a.is_usable() and not a.bridge_persona_id]
+    targets = [a for a in store.accounts if a.is_usable()]
     if not targets:
         return
     log.info("Bootstrapping bridge persona on %d account(s)", len(targets))

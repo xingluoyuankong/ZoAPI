@@ -241,6 +241,9 @@ def _persona(acc: "Account | None" = None) -> str | None:
     """
     if acc is not None and getattr(acc, "bridge_persona_id", None):
         return acc.bridge_persona_id
+    if acc is not None and not getattr(acc, "bridge_persona_id", None):
+        log.warning("[%s] bridge_persona_id missing — lazy bootstrap will happen on next periodic loop", acc.label)
+        return None
     try:
         pid = runtime.get_persona_id().strip() if hasattr(runtime, "get_persona_id") else ""
         return pid or None
@@ -856,14 +859,19 @@ async def _startup_warm_models() -> None:
 
     # --- bridge-persona bootstrap (одна персона "ZoAPI Bridge" на каждый
     # Zo-аккаунт; scopes=[] — серверные тулы Zo физически отключены) ---
+    try:
+        await bridge_persona.bootstrap_all(ZO, STORE)
+    except Exception as e:  # noqa: BLE001
+        log.warning("startup bridge persona bootstrap failed: %s", e)
+
     async def _persona_loop() -> None:
-        # первый прогон сразу, потом раз в 5 минут (новые аккаунты)
+        # Перепроверка каждую минуту: если юзер сме
         while True:
             try:
                 await bridge_persona.bootstrap_all(ZO, STORE)
             except Exception as e:  # noqa: BLE001
                 log.warning("bridge persona bootstrap failed: %s", e)
-            await asyncio.sleep(300)
+            await asyncio.sleep(60)
 
     asyncio.create_task(_persona_loop())
 
@@ -1145,6 +1153,15 @@ async def _do_responses_websocket(
         convo_key = _convo_key(acc.label, instructions, first_user)
         convo_id = None  # multi-user isolation: всегда свежий разговор
         try:
+            # Lazy bridge-persona bootstrap (для аккаунтов без bridge_persona_id)
+            if not acc.bridge_persona_id:
+                try:
+                    import bridge_persona
+                    await bridge_persona.bootstrap_account(ZO, acc)
+                    STORE.save()
+                except Exception as _e:  # noqa: BLE001
+                    log.warning("[%s] lazy bridge persona failed: %s", acc.label, _e)
+            log.info("[%s] using persona_id=%s", acc.label, acc.bridge_persona_id or "(none)")
             async for ev_name, data, conv_header in ZO.ask_stream(
                 acc,
                 q=flat,
@@ -1220,6 +1237,15 @@ async def _do_openai_chat_stream(
         convo_key = _convo_key(acc.label, system, first_user)
         convo_id = None  # multi-user isolation: всегда свежий разговор
         try:
+            # Lazy bridge-persona bootstrap (для аккаунтов без bridge_persona_id)
+            if not acc.bridge_persona_id:
+                try:
+                    import bridge_persona
+                    await bridge_persona.bootstrap_account(ZO, acc)
+                    STORE.save()
+                except Exception as _e:  # noqa: BLE001
+                    log.warning("[%s] lazy bridge persona failed: %s", acc.label, _e)
+            log.info("[%s] using persona_id=%s", acc.label, acc.bridge_persona_id or "(none)")
             async for ev_name, data, conv_header in ZO.ask_stream(
                 acc,
                 q=flat_input,
@@ -1309,6 +1335,15 @@ async def _do_responses_stream(
         convo_key = _convo_key(acc.label, system, first_user)
         convo_id = None  # multi-user isolation: всегда свежий разговор
         try:
+            # Lazy bridge-persona bootstrap (для аккаунтов без bridge_persona_id)
+            if not acc.bridge_persona_id:
+                try:
+                    import bridge_persona
+                    await bridge_persona.bootstrap_account(ZO, acc)
+                    STORE.save()
+                except Exception as _e:  # noqa: BLE001
+                    log.warning("[%s] lazy bridge persona failed: %s", acc.label, _e)
+            log.info("[%s] using persona_id=%s", acc.label, acc.bridge_persona_id or "(none)")
             async for ev_name, data, conv_header in ZO.ask_stream(
                 acc,
                 q=flat_input,
@@ -1376,6 +1411,15 @@ async def _collect_text_response(
         try:
             text_acc: list[str] = []
             new_conv: str | None = None
+            # Lazy bridge-persona bootstrap (для аккаунтов без bridge_persona_id)
+            if not acc.bridge_persona_id:
+                try:
+                    import bridge_persona
+                    await bridge_persona.bootstrap_account(ZO, acc)
+                    STORE.save()
+                except Exception as _e:  # noqa: BLE001
+                    log.warning("[%s] lazy bridge persona failed: %s", acc.label, _e)
+            log.info("[%s] using persona_id=%s", acc.label, acc.bridge_persona_id or "(none)")
             async for ev_name, data, conv_header in ZO.ask_stream(
                 acc,
                 q=flat_input,
@@ -1466,6 +1510,15 @@ async def _do_stream(
         convo_id = None  # multi-user isolation: всегда свежий разговор
 
         try:
+            # Lazy bridge-persona bootstrap (для аккаунтов без bridge_persona_id)
+            if not acc.bridge_persona_id:
+                try:
+                    import bridge_persona
+                    await bridge_persona.bootstrap_account(ZO, acc)
+                    STORE.save()
+                except Exception as _e:  # noqa: BLE001
+                    log.warning("[%s] lazy bridge persona failed: %s", acc.label, _e)
+            log.info("[%s] using persona_id=%s", acc.label, acc.bridge_persona_id or "(none)")
             async for ev_name, data, conv_header in ZO.ask_stream(
                 acc,
                 q=flat_input,
@@ -1553,6 +1606,15 @@ async def _do_nonstream(
         try:
             text_acc: list[str] = []
             new_conv: str | None = None
+            # Lazy bridge-persona bootstrap (для аккаунтов без bridge_persona_id)
+            if not acc.bridge_persona_id:
+                try:
+                    import bridge_persona
+                    await bridge_persona.bootstrap_account(ZO, acc)
+                    STORE.save()
+                except Exception as _e:  # noqa: BLE001
+                    log.warning("[%s] lazy bridge persona failed: %s", acc.label, _e)
+            log.info("[%s] using persona_id=%s", acc.label, acc.bridge_persona_id or "(none)")
             async for ev_name, data, conv_header in ZO.ask_stream(
                 acc,
                 q=flat_input,
