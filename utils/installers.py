@@ -53,41 +53,82 @@ def is_windows() -> bool:
 # ---------------------------------------------------------------------------
 
 
-def _setx(name: str, value: str) -> tuple[bool, str]:
-    """Windows: persist в user scope через setx и обновить текущий процесс."""
+def _broadcast_env_change() -> None:
+    """Windows: WM_SETTINGCHANGE, чтобы запущенные процессы видели новые env vars."""
+    if not is_windows():
+        return
     try:
-        res = subprocess.run(
-            ["setx", name, value],
-            capture_output=True,
-            text=True,
-            timeout=20,
-            check=False,
-            shell=False,
+        import ctypes
+        HWND_BROADCAST = 0xFFFF
+        WM_SETTINGCHANGE = 0x001A
+        SMTO_ABORTIFHUNG = 0x0002
+        result = ctypes.c_long()
+        ctypes.windll.user32.SendMessageTimeoutW(
+            HWND_BROADCAST,
+            WM_SETTINGCHANGE,
+            0,
+            "Environment",
+            SMTO_ABORTIFHUNG,
+            5000,
+            ctypes.byref(result),
         )
-        ok = res.returncode == 0
-        msg = ((res.stdout or "") + (res.stderr or "")).strip()
+    except Exception:
+        pass
+
+
+def _setx(name: str, value: str) -> tuple[bool, str]:
+    """Windows: persist в user scope, plus best-effort machine scope, plus
+    broadcast WM_SETTINGCHANGE так чтобы новые процессы подхватили без перезагрузки."""
+    try:
+        # user scope
+        u = subprocess.run(
+            ["setx", name, value],
+            capture_output=True, text=True, timeout=20, check=False, shell=False,
+        )
+        ok = u.returncode == 0
+        msg = ((u.stdout or "") + (u.stderr or "")).strip()
+        # machine scope — best effort, обычно без админ-прав сфейлит, это ок
+        subprocess.run(
+            ["setx", "/M", name, value],
+            capture_output=True, text=True, timeout=20, check=False, shell=False,
+        )
         if ok:
             os.environ[name] = value
+        _broadcast_env_change()
         return ok, msg
     except Exception as e:  # noqa: BLE001
         return False, str(e)
 
 
 def _reg_unset(name: str) -> tuple[bool, str]:
-    """Windows: удалить user-scope env var через reg delete."""
+    """Windows: удалить env var из HKCU и (best-effort) HKLM."""
+    ok = False
+    msgs: list[str] = []
     try:
-        res = subprocess.run(
+        u = subprocess.run(
             ["reg", "delete", "HKCU\\Environment", "/F", "/V", name],
-            capture_output=True,
-            text=True,
-            timeout=20,
-            check=False,
-            shell=False,
+            capture_output=True, text=True, timeout=20, check=False, shell=False,
         )
-        os.environ.pop(name, None)
-        return res.returncode == 0, ((res.stdout or "") + (res.stderr or "")).strip()
+        if u.returncode == 0:
+            ok = True
+        else:
+            msgs.append((u.stdout or "") + (u.stderr or ""))
     except Exception as e:  # noqa: BLE001
-        return False, str(e)
+        msgs.append(str(e))
+    try:
+        subprocess.run(
+            [
+                "reg", "delete",
+                "HKLM\\SYSTEM\\CurrentControlSet\\Control\\Session Manager\\Environment",
+                "/F", "/V", name,
+            ],
+            capture_output=True, text=True, timeout=20, check=False, shell=False,
+        )
+    except Exception:
+        pass
+    os.environ.pop(name, None)
+    _broadcast_env_change()
+    return ok, " ".join(m.strip() for m in msgs if m).strip()
 
 
 def _unix_rc_files() -> list[Path]:
@@ -184,8 +225,35 @@ def _remove_unix_block(rc: Path) -> None:
         rc.write_text(cleaned, encoding="utf-8")
 
 
+def _strip_unix_stray_export(rc: Path, key: str) -> None:
+    """Убрать любые `export KEY=...` или `KEY=...` строки В РАЗНЫХ местах rc-файла,
+    КРОМЕ нашего marker-блока — туда ключ положит set_env_vars."""
+    if not rc.exists():
+        return
+    text = rc.read_text(encoding="utf-8")
+    s = text.find(ENV_MARKER_START)
+    e = text.find(ENV_MARKER_END, s) + len(ENV_MARKER_END) if s != -1 else -1
+    if s != -1 and e != -1:
+        before, block, after = text[:s], text[s:e], text[e:]
+    else:
+        before, block, after = text, "", ""
+    pat = re.compile(
+        rf'^\s*(?:export\s+)?{re.escape(key)}\s*=.*$',
+        re.MULTILINE,
+    )
+    new_before = pat.sub("", before)
+    new_after = pat.sub("", after)
+    # уберём двойные пустые строки, не более одной подряд
+    new_before = re.sub(r'\n{3,}', '\n\n', new_before)
+    new_after = re.sub(r'\n{3,}', '\n\n', new_after)
+    new_text = new_before + block + new_after
+    if new_text != text:
+        rc.write_text(new_text, encoding="utf-8")
+
+
 def set_env_vars(vars_: dict[str, str]) -> list[str]:
-    """Прописать env vars так, чтобы они выжили перезагрузку терминала."""
+    """Прописать env vars так, чтобы они выжили перезагрузку терминала
+    И не было стейла от старых установок / ручных правок."""
     log: list[str] = []
     if is_windows():
         for k, v in vars_.items():
@@ -195,20 +263,15 @@ def set_env_vars(vars_: dict[str, str]) -> list[str]:
                 + (f" ({msg})" if msg and not ok else "")
             )
     else:
-        # Юникс: и в файлы, и в текущий процесс.
+        # Сначала добить любые стейл-объявления вне нашего блока
+        for rc in _unix_rc_files():
+            for k in vars_.keys():
+                _strip_unix_stray_export(rc, k)
+        # текущий процесс
         for k, v in vars_.items():
             os.environ[k] = v
-        rcs = _unix_rc_files()
-        # обновляем только реально существующие или важные (.zshrc/.bashrc)
-        # .profile создаём только если нет ни zshrc, ни bashrc.
-        targets = [rc for rc in rcs if rc.name in (".zshrc", ".bashrc") and rc.exists()]
-        if not targets:
-            shell = os.environ.get("SHELL", "")
-            if "zsh" in shell:
-                targets = [Path.home() / ".zshrc"]
-            else:
-                targets = [Path.home() / ".bashrc"]
-        for rc in targets:
+        # наш блок
+        for rc in _unix_rc_files():
             try:
                 _write_unix_block(rc, vars_)
                 log.append(f"updated {rc}")
@@ -272,11 +335,9 @@ def _strip_top_level_key(text: str, key: str) -> str:
 
 
 def install_codex() -> list[str]:
-    """Прописать Codex CLI: env + ~/.codex/config.toml.
-
-    Корневой ключ `model_provider = "zoapi"` всегда оказывается в корне TOML
-    (вставляется до первой `[...]` секции), таблица провайдера — в конце файла.
-    """
+    """Прописать Codex CLI: env + ~/.codex/config.toml. Жёстко: убивает любой
+    стейл от старых версий, включая stray `model_provider=...` в корне и
+    оставшийся вручную `[model_providers.zoapi]` БЕЗ маркеров."""
     log = set_env_vars(
         {
             "OPENAI_API_KEY": DUMMY_KEY,
@@ -286,13 +347,19 @@ def install_codex() -> list[str]:
     CODEX_DIR.mkdir(parents=True, exist_ok=True)
     existing = CODEX_CONFIG.read_text(encoding="utf-8") if CODEX_CONFIG.exists() else ""
 
-    # 1) убрать наши прошлые блоки
+    # 1) убрать наши прошлые блоки (с маркерами)
     cleaned = _strip_block(existing, TOML_TOP_START, TOML_TOP_END)
     cleaned = _strip_block(cleaned, TOML_MARKER_START, TOML_MARKER_END)
     # 2) убрать любой свободно стоящий top-level `model_provider = ...`
     cleaned = _strip_top_level_key(cleaned, "model_provider").rstrip()
+    # 3) добить любую `[model_providers.zoapi]` таблицу БЕЗ маркеров (старые ручные правки)
+    cleaned = re.sub(
+        r'(?ms)^\[\s*model_providers\.zoapi\s*\][^\[]*?(?=^\[|\Z)',
+        '',
+        cleaned,
+    ).rstrip()
 
-    # 3) вставить TOP-блок перед первой [...] секцией (или в начало, если её нет)
+    # 4) вставить TOP-блок перед первой [...] секцией (или в начало, если её нет)
     lines = cleaned.splitlines()
     section_idx = next(
         (i for i, l in enumerate(lines) if l.lstrip().startswith("[")),
@@ -339,16 +406,21 @@ CLAUDE_SETTINGS = CLAUDE_DIR / "settings.json"
 
 
 def install_claude() -> list[str]:
-    """Прописать Claude Code: env + ~/.claude/settings.json (поле env)."""
+    """Прописать Claude Code: env + ~/.claude/settings.json. Жёстко: удаляет
+    ANTHROPIC_API_KEY изо всех мест (env vars + settings.json env block +
+    stray rc-строки) чтобы не было Auth-conflict у юзеров со старой установкой."""
     log = set_env_vars(
         {
             "ANTHROPIC_BASE_URL": PROXY_URL,
             "ANTHROPIC_AUTH_TOKEN": DUMMY_KEY,
         }
     )
-    # Claude Code ругается «Auth conflict», если выставлены и ANTHROPIC_AUTH_TOKEN,
-    # и ANTHROPIC_API_KEY. Старые версии лаунчера ставили обе — чистим API_KEY.
+    # API_KEY чистим везде
     log.extend(unset_env_vars(["ANTHROPIC_API_KEY"]))
+    if not is_windows():
+        for rc in _unix_rc_files():
+            _strip_unix_stray_export(rc, "ANTHROPIC_API_KEY")
+
     CLAUDE_DIR.mkdir(parents=True, exist_ok=True)
     data: dict = {}
     if CLAUDE_SETTINGS.exists():
@@ -364,6 +436,8 @@ def install_claude() -> list[str]:
     env["ANTHROPIC_BASE_URL"] = PROXY_URL
     env["ANTHROPIC_AUTH_TOKEN"] = DUMMY_KEY
     env.pop("ANTHROPIC_API_KEY", None)
+    # Также чистим возможный apiKeyHelper, который перебивает наш token
+    data.pop("apiKeyHelper", None)
     data["env"] = env
     CLAUDE_SETTINGS.write_text(
         json.dumps(data, indent=2, ensure_ascii=False),
@@ -423,31 +497,61 @@ OPENCODE_PROVIDER = {
         "apiKey": DUMMY_KEY,
     },
     "models": {
-        # Anthropic
+        # Anthropic — Opus
+        "claude-opus-4-8": {"name": "Claude Opus 4.8"},
+        "claude-opus-4-8-thinking": {"name": "Claude Opus 4.8 (Thinking)"},
         "claude-opus-4-7": {"name": "Claude Opus 4.7"},
+        "claude-opus-4-7-thinking": {"name": "Claude Opus 4.7 (Thinking)"},
+        "claude-opus-4-6": {"name": "Claude Opus 4.6"},
+        "claude-opus-4-5": {"name": "Claude Opus 4.5"},
+        "claude-opus-4-1": {"name": "Claude Opus 4.1"},
+        "claude-opus-4": {"name": "Claude Opus 4"},
+        "claude-3-opus-latest": {"name": "Claude 3 Opus"},
+        # Anthropic — Sonnet
         "claude-sonnet-4-6": {"name": "Claude Sonnet 4.6"},
-        # OpenAI / GPT
-        "gpt-5.5": {"name": "GPT-5.5"},
-        "gpt-5.4": {"name": "GPT-5.4"},
-        "gpt-5.4-mini": {"name": "GPT-5.4 Mini"},
-        "gpt-5.3-codex": {"name": "GPT-5.3 Codex"},
+        "claude-sonnet-4-6-thinking": {"name": "Claude Sonnet 4.6 (Thinking)"},
+        "claude-sonnet-4-5": {"name": "Claude Sonnet 4.5"},
+        "claude-sonnet-4-5-thinking": {"name": "Claude Sonnet 4.5 (Thinking)"},
+        "claude-sonnet-4": {"name": "Claude Sonnet 4"},
+        "claude-3-7-sonnet-latest": {"name": "Claude 3.7 Sonnet"},
+        "claude-3-5-sonnet-latest": {"name": "Claude 3.5 Sonnet"},
+        # Anthropic — Haiku
+        "claude-haiku-4-6": {"name": "Claude Haiku 4.6"},
+        "claude-haiku-4-5": {"name": "Claude Haiku 4.5"},
+        "claude-3-5-haiku-latest": {"name": "Claude 3.5 Haiku"},
+        # OpenAI
+        "gpt-5": {"name": "GPT-5"},
+        "gpt-5-pro": {"name": "GPT-5 Pro"},
+        "gpt-5-codex": {"name": "GPT-5 Codex"},
+        "gpt-5-mini": {"name": "GPT-5 Mini"},
+        "gpt-5-nano": {"name": "GPT-5 Nano"},
+        "gpt-4o": {"name": "GPT-4o"},
+        "gpt-4o-mini": {"name": "GPT-4o Mini"},
+        "o3": {"name": "o3"},
+        "o3-pro": {"name": "o3 Pro"},
+        "o3-mini": {"name": "o3 Mini"},
+        "o4-mini": {"name": "o4 Mini"},
         # Google
-        "gemini-3.1-pro-preview": {"name": "Gemini 3.1 Pro (preview)"},
+        "gemini-3.0-pro": {"name": "Gemini 3.0 Pro"},
+        "gemini-2.5-pro": {"name": "Gemini 2.5 Pro"},
+        "gemini-2.5-flash": {"name": "Gemini 2.5 Flash"},
+        # xAI
+        "grok-4": {"name": "Grok 4"},
+        "grok-3": {"name": "Grok 3"},
         # DeepSeek
-        "deepseek-v4-pro": {"name": "DeepSeek V4 Pro"},
-        # Z.AI
-        "glm-5": {"name": "GLM-5"},
-        # MiniMax
-        "minimax-m2.5": {"name": "MiniMax 2.5"},
-        "minimax-m2.7": {"name": "MiniMax 2.7"},
+        "deepseek-v3": {"name": "DeepSeek V3"},
+        "deepseek-r1": {"name": "DeepSeek R1"},
+        # Other
+        "kimi-k2": {"name": "Kimi K2"},
+        "qwen-3-coder": {"name": "Qwen 3 Coder"},
+        "llama-3.3": {"name": "Llama 3.3"},
     },
 }
 
 
 def install_opencode() -> list[str]:
-    """Прописать OpenCode: добавить провайдера `zoapi` в opencode.json
-    БЕЗ удаления остальных провайдеров / настроек.
-    """
+    """Прописать OpenCode: ЖЁСТКО перезаписать provider.zoapi на свежий
+    каталог. Других провайдеров (openrouter / anthropic / ...) НЕ трогаем."""
     log: list[str] = []
     OPENCODE_DIR.mkdir(parents=True, exist_ok=True)
 
@@ -462,13 +566,13 @@ def install_opencode() -> list[str]:
             log.append(f"warn: existing {OPENCODE_CONFIG} not valid JSON ({e}); will rewrite")
             data = {}
 
-    # schema подставляем только если отсутствует — не перетираем чужой
     data.setdefault("$schema", "https://opencode.ai/config.json")
 
     provider = data.get("provider")
     if not isinstance(provider, dict):
         provider = {}
-    # МЕРЖ: правим только наш ключ, остальные провайдеры не трогаем
+    # ЖЁСТКАЯ ПЕРЕЗАПИСЬ — старый zoapi может содержать устаревшие/битые поля,
+    # мерж их сохранил бы. Целиком меняем на свежий каталог.
     provider[OPENCODE_PROVIDER_KEY] = OPENCODE_PROVIDER
     data["provider"] = provider
 
