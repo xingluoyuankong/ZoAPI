@@ -41,6 +41,7 @@ from zo_client import (
     ZoForbidden,
     ZoServerError,
 )
+from contextlib import asynccontextmanager
 
 # ---------------------------------------------------------------------------
 # config / logging
@@ -433,7 +434,15 @@ def _force_rotate(account: Account, err: Exception) -> Account | None:
 # FastAPI
 # ---------------------------------------------------------------------------
 
-app = FastAPI(title="zo-claude-proxy")
+@asynccontextmanager
+async def lifespan(app: FastAPI):
+    try:
+        yield
+    finally:
+        await ZO.close()
+
+
+app = FastAPI(title="zo-claude-proxy", lifespan=lifespan)
 
 
 @app.exception_handler(HTTPException)
@@ -444,11 +453,6 @@ async def _http_exc(request: Request, exc: HTTPException) -> JSONResponse:
 @app.exception_handler(RequestValidationError)
 async def _val_exc(request: Request, exc: RequestValidationError) -> JSONResponse:
     return _error_for_path(request.url.path, 400, f"Bad request body: {exc.errors()[:3]}")
-
-
-@app.on_event("shutdown")
-async def _shutdown() -> None:
-    await ZO.close()
 
 
 # ------------------------- health & admin -------------------------
@@ -1211,8 +1215,6 @@ def _print_startup_banner() -> None:
         print()
         return
     print()
-    from setup import render_table
-    print(render_table(STORE))
     a = _pick_account()
     if a:
         print(f"\n  → активный: {a.label} ({a.email() or a.domain})")
