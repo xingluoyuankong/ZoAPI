@@ -525,45 +525,64 @@ async def admin_set_active(req: Request) -> dict[str, Any]:
 # ------------------------- models -------------------------
 
 
+ANTHROPIC_CATALOG: list[dict[str, Any]] = [
+    # Opus
+    {"id": "claude-opus-4-8", "display_name": "Claude Opus 4.8", "summary": "Most capable for complex work"},
+    {"id": "claude-opus-4-8-thinking", "display_name": "Claude Opus 4.8 (Thinking)", "summary": "Opus 4.8 with extended thinking"},
+    {"id": "claude-opus-4-7", "display_name": "Claude Opus 4.7", "summary": "Previous flagship"},
+    {"id": "claude-opus-4-7-thinking", "display_name": "Claude Opus 4.7 (Thinking)", "summary": "Opus 4.7 with extended thinking"},
+    {"id": "claude-opus-4-6", "display_name": "Claude Opus 4.6", "summary": "Older flagship"},
+    {"id": "claude-opus-4-5", "display_name": "Claude Opus 4.5", "summary": "Older flagship"},
+    {"id": "claude-opus-4-1", "display_name": "Claude Opus 4.1", "summary": "Older flagship"},
+    {"id": "claude-opus-4", "display_name": "Claude Opus 4", "summary": "Older flagship"},
+    {"id": "claude-3-opus-latest", "display_name": "Claude 3 Opus", "summary": "Anthropic 3.x family"},
+    # Sonnet
+    {"id": "claude-sonnet-4-6", "display_name": "Claude Sonnet 4.6", "summary": "Best for everyday tasks"},
+    {"id": "claude-sonnet-4-6-thinking", "display_name": "Claude Sonnet 4.6 (Thinking)", "summary": "Sonnet 4.6 with extended thinking"},
+    {"id": "claude-sonnet-4-5", "display_name": "Claude Sonnet 4.5", "summary": "Older everyday model"},
+    {"id": "claude-sonnet-4-5-thinking", "display_name": "Claude Sonnet 4.5 (Thinking)", "summary": "Sonnet 4.5 with extended thinking"},
+    {"id": "claude-sonnet-4", "display_name": "Claude Sonnet 4", "summary": "Older everyday model"},
+    {"id": "claude-3-7-sonnet-latest", "display_name": "Claude 3.7 Sonnet", "summary": "Anthropic 3.x family"},
+    {"id": "claude-3-5-sonnet-latest", "display_name": "Claude 3.5 Sonnet", "summary": "Anthropic 3.x family"},
+    # Haiku
+    {"id": "claude-haiku-4-6", "display_name": "Claude Haiku 4.6", "summary": "Fastest for quick answers"},
+    {"id": "claude-haiku-4-5", "display_name": "Claude Haiku 4.5", "summary": "Older fast model"},
+    {"id": "claude-3-5-haiku-latest", "display_name": "Claude 3.5 Haiku", "summary": "Anthropic 3.x family"},
+]
+
+
+def _catalog_entry(m: dict[str, Any]) -> dict[str, Any]:
+    out = {
+        "id": m["id"],
+        "object": "model",
+        "type": "model",
+        "display_name": m.get("display_name") or m["id"],
+        "created": 1704067200,
+        "created_at": "2024-01-01T00:00:00Z",
+        "owned_by": "anthropic",
+    }
+    if m.get("summary"):
+        out["summary"] = m["summary"]
+    return out
+
+
 @app.get("/v1/models")
 async def list_models() -> dict[str, Any]:
-    a = _pick_account()
-    if not a:
-        raise HTTPException(status_code=401, detail="No usable Zo account. Run setup.py.")
-    try:
-        models = await _get_models_for(a)
-    except ZoAuthError as e:
-        raise HTTPException(status_code=401, detail=str(e))
-    except Exception as e:
-        raise HTTPException(status_code=502, detail=f"Zo /models/available failed: {e}")
-
-    data = []
-    for m in models:
-        zo_name = m.get("model_name")
-        if not zo_name:
-            continue
-        public_id = zo_name.split("/")[-1]
-        data.append(
-            {
-                "id": public_id,
-                "object": "model",
-                "type": "model",
-                "display_name": m.get("label") or public_id,
-                "created": 1704067200,
-                "created_at": "2024-01-01T00:00:00Z",
-                "owned_by": "zo",
-                "zo_model_name": zo_name,
-                "context_window": m.get("context_window"),
-                "vendor": m.get("vendor"),
-                "tier": m.get("type"),
-            }
-        )
+    data = [_catalog_entry(m) for m in ANTHROPIC_CATALOG]
     return {
         "object": "list",
         "data": data,
         "has_more": False,
         "first_id": data[0]["id"] if data else None,
     }
+
+
+@app.get("/v1/models/{model_id}")
+async def get_model(model_id: str) -> dict[str, Any]:
+    for m in ANTHROPIC_CATALOG:
+        if m["id"] == model_id:
+            return _catalog_entry(m)
+    raise HTTPException(status_code=404, detail=f"model not found: {model_id}")
 
 
 # ------------------------- /v1/messages -------------------------
