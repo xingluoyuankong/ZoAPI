@@ -182,39 +182,45 @@ class ResponsesApiTranslator:
     def _ev(self, name: str, payload: dict[str, Any]) -> str:
         return _sse_line(name, payload)
 
-    def start(self) -> Generator[str, None, None]:
-        yield self._ev("response.created", {
-            "type": "response.created",
-            "response": {
-                "id": self._resp_id,
-                "object": "realtime.response",
-                "status": "in_progress",
-                "output": [],
-                "model": self.model,
-                "created_at": self._created,
+    def start_events(self) -> list[dict[str, Any]]:
+        return [
+            {
+                "type": "response.created",
+                "response": {
+                    "id": self._resp_id,
+                    "object": "realtime.response",
+                    "status": "in_progress",
+                    "output": [],
+                    "model": self.model,
+                    "created_at": self._created,
+                },
             },
-        })
-        yield self._ev("response.output_item.added", {
-            "type": "response.output_item.added",
-            "output_index": 0,
-            "item": {
-                "id": self._item_id,
-                "object": "realtime.item",
-                "type": "message",
-                "status": "in_progress",
-                "role": "assistant",
-                "content": [],
+            {
+                "type": "response.output_item.added",
+                "output_index": 0,
+                "item": {
+                    "id": self._item_id,
+                    "object": "realtime.item",
+                    "type": "message",
+                    "status": "in_progress",
+                    "role": "assistant",
+                    "content": [],
+                },
             },
-        })
-        yield self._ev("response.content_part.added", {
-            "type": "response.content_part.added",
-            "item_id": self._item_id,
-            "output_index": 0,
-            "content_index": 0,
-            "part": {"type": "output_text", "text": ""},
-        })
+            {
+                "type": "response.content_part.added",
+                "item_id": self._item_id,
+                "output_index": 0,
+                "content_index": 0,
+                "part": {"type": "output_text", "text": ""},
+            },
+        ]
 
-    def feed(self, event_name: str, data: dict[str, Any]) -> Generator[str, None, None]:
+    def start(self) -> Generator[str, None, None]:
+        for payload in self.start_events():
+            yield self._ev(payload["type"], payload)
+
+    def feed_events(self, event_name: str, data: dict[str, Any]) -> list[dict[str, Any]]:
         text = ""
         if event_name == "PartStartEvent":
             part = data.get("part") or {}
@@ -224,66 +230,85 @@ class ResponsesApiTranslator:
             delta = data.get("delta") or {}
             if delta.get("part_delta_kind") == "text":
                 text = delta.get("content_delta") or ""
-        if text:
-            self._text_acc.append(text)
-            yield self._ev("response.output_text.delta", {
+        if not text:
+            return []
+        self._text_acc.append(text)
+        return [
+            {
                 "type": "response.output_text.delta",
                 "item_id": self._item_id,
                 "output_index": 0,
                 "content_index": 0,
                 "delta": text,
-            })
+            }
+        ]
 
-    def finish(self) -> Generator[str, None, None]:
+    def feed(self, event_name: str, data: dict[str, Any]) -> Generator[str, None, None]:
+        for payload in self.feed_events(event_name, data):
+            yield self._ev(payload["type"], payload)
+
+    def finish_events(self) -> list[dict[str, Any]]:
         full_text = "".join(self._text_acc)
-        yield self._ev("response.output_text.done", {
-            "type": "response.output_text.done",
-            "item_id": self._item_id,
-            "output_index": 0,
-            "content_index": 0,
-            "text": full_text,
-        })
-        yield self._ev("response.output_item.done", {
-            "type": "response.output_item.done",
-            "output_index": 0,
-            "item": {
-                "id": self._item_id,
-                "type": "message",
-                "status": "completed",
-                "role": "assistant",
-                "content": [{"type": "output_text", "text": full_text}],
+        return [
+            {
+                "type": "response.output_text.done",
+                "item_id": self._item_id,
+                "output_index": 0,
+                "content_index": 0,
+                "text": full_text,
             },
-        })
-        yield self._ev("response.completed", {
-            "type": "response.completed",
-            "response": {
-                "id": self._resp_id,
-                "status": "completed",
-                "output": [
-                    {
-                        "id": self._item_id,
-                        "type": "message",
-                        "role": "assistant",
-                        "content": [{"type": "output_text", "text": full_text}],
-                    }
-                ],
-                "model": self.model,
-                "usage": {
-                    "input_tokens": 0,
-                    "output_tokens": len(full_text.split()),
-                    "total_tokens": len(full_text.split()),
+            {
+                "type": "response.output_item.done",
+                "output_index": 0,
+                "item": {
+                    "id": self._item_id,
+                    "type": "message",
+                    "status": "completed",
+                    "role": "assistant",
+                    "content": [{"type": "output_text", "text": full_text}],
                 },
             },
-        })
+            {
+                "type": "response.completed",
+                "response": {
+                    "id": self._resp_id,
+                    "status": "completed",
+                    "output": [
+                        {
+                            "id": self._item_id,
+                            "type": "message",
+                            "role": "assistant",
+                            "content": [{"type": "output_text", "text": full_text}],
+                        }
+                    ],
+                    "model": self.model,
+                    "usage": {
+                        "input_tokens": 0,
+                        "output_tokens": len(full_text.split()),
+                        "total_tokens": len(full_text.split()),
+                    },
+                },
+            },
+        ]
+
+    def finish(self) -> Generator[str, None, None]:
+        for payload in self.finish_events():
+            yield self._ev(payload["type"], payload)
+
+    def error_events(self, status: int, message: str) -> list[dict[str, Any]]:
+        return [
+            {
+                "type": "error",
+                "code": str(status),
+                "message": message,
+                "param": None,
+                "event_id": uuid.uuid4().hex,
+            }
+        ]
 
     def error(self, status: int, message: str) -> Generator[str, None, None]:
-        yield self._ev("error", {
-            "type": "error",
-            "code": str(status),
-            "message": message,
-            "param": None,
-            "event_id": uuid.uuid4().hex,
-        })
+        for payload in self.error_events(status, message):
+            yield self._ev(payload["type"], payload)
 
 
 def build_responses_nonstream(model: str, text: str, resp_id: str | None = None) -> dict[str, Any]:

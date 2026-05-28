@@ -26,7 +26,7 @@ import uuid
 from typing import Any, AsyncIterator
 
 import httpx
-from fastapi import FastAPI, HTTPException, Request
+from fastapi import FastAPI, HTTPException, Request, WebSocket, WebSocketDisconnect
 from fastapi.exceptions import RequestValidationError
 from fastapi.responses import JSONResponse, StreamingResponse
 
@@ -664,6 +664,128 @@ async def responses_api(req: Request) -> Any:
             headers={"cache-control": "no-cache", "x-accel-buffering": "no"},
         )
     return await _do_responses_nonstream(flat, zo_model, instructions, first_user, model_req or "gpt-5")
+
+
+@app.websocket("/v1/responses")
+async def responses_socket(ws: WebSocket) -> None:
+    await ws.accept()
+    while True:
+        try:
+            msg = await ws.receive_json()
+        except WebSocketDisconnect:
+            return
+        except Exception:
+            await ws.send_json({
+                "type": "error",
+                "code": "400",
+                "message": "Invalid websocket JSON payload",
+                "param": None,
+                "event_id": uuid.uuid4().hex,
+            })
+            continue
+
+        if not isinstance(msg, dict):
+            await ws.send_json({
+                "type": "error",
+                "code": "400",
+                "message": "Websocket payload must be an object",
+                "param": None,
+                "event_id": uuid.uuid4().hex,
+            })
+            continue
+
+        body = msg.get("response") if msg.get("type") == "response.create" and isinstance(msg.get("response"), dict) else msg
+        try:
+            await _do_responses_websocket(ws, body)
+        except WebSocketDisconnect:
+            return
+        except Exception as e:
+            await ws.send_json({
+                "type": "error",
+                "code": "500",
+                "message": f"proxy error: {e}",
+                "param": None,
+                "event_id": uuid.uuid4().hex,
+            })
+
+
+async def _do_responses_websocket(
+    ws: WebSocket,
+    body: dict[str, Any],
+) -> None:
+    from openai_sse import ResponsesApiTranslator
+
+    model_req = body.get("model")
+    zo_model = _resolve_model(model_req)
+    instructions, msgs, tools = _responses_input_to_messages(body)
+    flat = _flatten_openai_messages(instructions, msgs, tools)
+    first_user = next(
+        (_stringify_openai_content(m.get("content")) for m in msgs if (m.get("role") or "").lower() == "user"),
+        "",
+    )
+
+    translator = ResponsesApiTranslator(model=model_req or "gpt-5")
+    started = False
+    attempts: list[str] = []
+    while True:
+        acc = _pick_account()
+        if not acc:
+            for payload in translator.error_events(401, "No usable Zo account. Run setup.py."):
+                await ws.send_json(payload)
+            return
+        if acc.label in attempts:
+            for payload in translator.error_events(502, f"All accounts failed: {attempts}"):
+                await ws.send_json(payload)
+            return
+        attempts.append(acc.label)
+        convo_key = _convo_key(acc.label, instructions, first_user)
+        convo_id = CONVO_CACHE.get(convo_key)
+        try:
+            async for ev_name, data, conv_header in ZO.ask_stream(
+                acc,
+                q=flat,
+                model_name=zo_model,
+                conversation_id=convo_id,
+                expanded_paths=EXPANDED_PATHS,
+            ):
+                if not started:
+                    for payload in translator.start_events():
+                        await ws.send_json(payload)
+                    started = True
+                if conv_header:
+                    CONVO_CACHE[convo_key] = conv_header
+                for payload in translator.feed_events(ev_name, data):
+                    await ws.send_json(payload)
+            for payload in translator.finish_events():
+                await ws.send_json(payload)
+            STORE.mark_ok(acc.label)
+            return
+        except ZoAuthError as e:
+            new = _force_rotate(acc, e)
+            if new and not started and new.label != acc.label:
+                continue
+            for payload in translator.error_events(401, f"Zo auth: {e}"):
+                await ws.send_json(payload)
+            return
+        except ZoForbidden as e:
+            new = _force_rotate(acc, e)
+            if new and not started and new.label != acc.label:
+                continue
+            for payload in translator.error_events(403, f"Zo: {e}"):
+                await ws.send_json(payload)
+            return
+        except (ZoServerError, ZoBadRequest, httpx.HTTPError) as e:
+            new = _rotate_on_error(acc, e)
+            if new and not started and new.label != acc.label:
+                continue
+            for payload in translator.error_events(502, f"Zo error: {e}"):
+                await ws.send_json(payload)
+            return
+        except Exception as e:
+            log.exception("[%s] responses websocket unexpected", acc.label)
+            for payload in translator.error_events(500, f"proxy error: {e}"):
+                await ws.send_json(payload)
+            return
 
 
 async def _do_openai_chat_stream(

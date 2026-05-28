@@ -54,6 +54,8 @@ def render_table(store: AccountStore) -> str:
     if not store.accounts:
         return "  (нет аккаунтов — добавь первый через [a])"
     rows = []
+    mode_text = "rotation" if getattr(store, "mode", "fixed") == "rotation" else "fixed"
+    rows.append(f"  mode: {mode_text}")
     rows.append(f"  {'#':<3}{'active':<8}{'label':<14}{'email':<28}{'domain':<14}{'TTL':<14}{'streak':<8}{'state':<10}")
     rows.append("  " + "-" * 100)
     for i, a in enumerate(store.accounts):
@@ -170,10 +172,11 @@ def menu(store: AccountStore) -> None:
             "\nКоманды:\n"
             "  a       — добавить аккаунт\n"
             "  s N     — сделать активным аккаунт #N\n"
-            "  r N     — удалить аккаунт #N\n"
+            "  m       — переключить режим fixed / rotation\n"
             "  t       — пингануть все аккаунты\n"
             "  d N     — отключить (disable) аккаунт #N\n"
             "  e N     — включить (enable) аккаунт #N\n"
+            "  r N     — удалить аккаунт #N\n"
             "  q       — выход\n"
         )
         try:
@@ -193,6 +196,11 @@ def menu(store: AccountStore) -> None:
             continue
         if cmd == "t":
             asyncio.run(ping_all(store))
+            continue
+        if cmd == "m":
+            next_mode = "rotation" if getattr(store, "mode", "fixed") != "rotation" else "fixed"
+            store.set_mode(next_mode)
+            print(f"[+] режим: {next_mode}")
             continue
         if cmd in ("s", "r", "d", "e") and len(parts) == 2 and parts[1].isdigit():
             i = int(parts[1])

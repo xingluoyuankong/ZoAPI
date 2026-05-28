@@ -2,6 +2,8 @@ accounts.json
 .env
 .venv/
 .codex-home/
+launcher_state.json
+proxy.log
 __pycache__/
 *.pyc
 *.pyo
