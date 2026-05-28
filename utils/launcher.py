@@ -1172,6 +1172,38 @@ def show_proxy_log(state: dict) -> None:
         pass
 
 
+def _kill_by_port(port: int) -> None:
+    """Грохает любой процесс, слушающий port. Резервный фоллбек когда
+    PID-файла нет или таскилл по PID не помог."""
+    try:
+        if os.name == "nt":
+            out = subprocess.run(
+                ["netstat", "-ano"],
+                capture_output=True,
+                text=True,
+                timeout=5,
+            )
+            for line in out.stdout.splitlines():
+                if "LISTENING" in line and str(port) in line:
+                    pid = line.split()[-1]
+                    subprocess.run(["taskkill", "/F", "/PID", pid])
+                    return
+        else:
+            out = subprocess.run(
+                ["lsof", "-i", f":{port}"],
+                capture_output=True,
+                text=True,
+                timeout=5,
+            )
+            for line in out.stdout.splitlines():
+                if "LISTEN" in line:
+                    pid = line.split()[1]
+                    os.kill(int(pid), 15)
+                    return
+    except Exception:
+        pass
+
+
 def main() -> int:
     state = load_state()
     store = AccountStore()
@@ -1248,36 +1280,7 @@ if __name__ == "__main__":
         sys.exit(130)
 
 
-def _kill_by_port(port: int) -> None:
-    """Грохает любой процесс, слушающий port. Резервный фоллбек когда
-    PID-файла нет или таскилл по PID не помог."""
-    try:
-        if os.name == "nt":
-            out = subprocess.run(
-                ["netstat", "-ano"],
-                capture_output=True,
-                text=True,
-                timeout=5,
-            )
-            for line in out.stdout.splitlines():
-                if "LISTENING" in line and str(port) in line:
-                    pid = line.split()[-1]
-                    subprocess.run(["taskkill", "/F", "/PID", pid])
-                    return
-        else:
-            out = subprocess.run(
-                ["lsof", "-i", f":{port}"],
-                capture_output=True,
-                text=True,
-                timeout=5,
-            )
-            for line in out.stdout.splitlines():
-                if "LISTEN" in line:
-                    pid = line.split()[1]
-                    os.kill(int(pid), 15)
-                    return
-    except Exception:
-        pass
+
     try:
         if os.name == "nt":
             subprocess.run(["taskkill", "/F", "/PID", str(proc.pid)])
