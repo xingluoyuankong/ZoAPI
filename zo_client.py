@@ -299,6 +299,7 @@ class ZoClient:
         Между шагами sleep(1) чтобы бэкенд успел.
         """
         import asyncio
+        import runtime
         # --- 1) list ---
         try:
             personas = await self.list_personas(account)
@@ -319,7 +320,7 @@ class ZoClient:
         if not pid:
             try:
                 created = await self.create_persona(
-                    account, name, prompt, scopes=[]
+                    account, name, prompt, scopes=["web:browse"]
                 )
                 pid = created.get("id") if isinstance(created, dict) else None
                 log.info(
@@ -340,13 +341,13 @@ class ZoClient:
             log.warning("[%s] ensure_bridge_persona: no pid after create", account.label)
             return None
 
-        # --- 3) set main ---
+        # --- 3) set main (всегда: бридж должна быть активной)
         try:
             ok = await self.set_main_persona(account, pid)
             log.info("[%s] ensure_bridge_persona: set_main_persona ok=%s pid=%s", account.label, ok, pid)
-        except Exception as e:
+        except Exception as e:  # noqa: BLE001
             log.exception("[%s] ensure_bridge_persona: set_main_persona FAILED: %s", account.label, e)
-            return pid
+
         await asyncio.sleep(1.0)
 
         # --- 4) verify ---
@@ -356,17 +357,13 @@ class ZoClient:
             if current_main == pid:
                 log.info("[%s] ensure_bridge_persona: VERIFIED main=%s", account.label, pid)
             else:
-                log.warning(
-                    "[%s] ensure_bridge_persona: main mismatch — expected %s got %s",
-                    account.label, pid, current_main,
-                )
-                # retry one more time
+                log.warning("[%s] ensure_bridge_persona: main mismatch — expected %s got %s, retry", account.label, pid, current_main)
                 await asyncio.sleep(1.0)
                 try:
                     await self.set_main_persona(account, pid)
                 except Exception:
                     pass
-        except Exception as e:
+        except Exception as e:  # noqa: BLE001
             log.warning("[%s] ensure_bridge_persona: verify failed: %s", account.label, e)
 
         return pid
@@ -458,6 +455,7 @@ class ZoClient:
         ) as resp:
             if resp.status_code >= 400:
                 err = (await resp.aread()).decode("utf-8", errors="replace")
+                log.warning("[%s] Zo /ask %d body: %s", account.label, resp.status_code, err[:1500])
                 _raise_status(resp.status_code, err)
 
             conv_header = resp.headers.get("x-conversation-id")

@@ -116,3 +116,8 @@ def get_persona_id() -> str:
 
 def set_persona_id(value: str) -> None:
     set("persona_id", value or None)
+
+
+# --- агрессивная установка активной персоны на аккаунте ---
+# По умолчанию выключено: достаточно передавать persona_id в body /ask.
+# Включай только если у тебя
