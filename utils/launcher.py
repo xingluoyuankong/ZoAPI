@@ -1178,6 +1178,9 @@ def main() -> int:
     console.clear()
     console.print(header_panel(state, store, False))
     console.print(f"[#b8a7d9]{glyphs()['run']} {tr(state, 'proxy_start')}[/#b8a7d9]")
+    stop_proxy()
+    _kill_by_port(PROXY_PORT)
+    time.sleep(0.6)
     if not start_proxy():
         console.print(f"[#f4b7b7]{glyphs()['err']} {tr(state, 'api_failed')}[/#f4b7b7]")
         show_proxy_log(state)
@@ -1243,3 +1246,43 @@ if __name__ == "__main__":
         sys.exit(main())
     except KeyboardInterrupt:
         sys.exit(130)
+
+
+def _kill_by_port(port: int) -> None:
+    """Грохает любой процесс, слушающий port. Резервный фоллбек когда
+    PID-файла нет или таскилл по PID не помог."""
+    try:
+        if os.name == "nt":
+            out = subprocess.run(
+                ["netstat", "-ano"],
+                capture_output=True,
+                text=True,
+                timeout=5,
+            )
+            for line in out.stdout.splitlines():
+                if "LISTENING" in line and str(port) in line:
+                    pid = line.split()[-1]
+                    subprocess.run(["taskkill", "/F", "/PID", pid])
+                    return
+        else:
+            out = subprocess.run(
+                ["lsof", "-i", f":{port}"],
+                capture_output=True,
+                text=True,
+                timeout=5,
+            )
+            for line in out.stdout.splitlines():
+                if "LISTEN" in line:
+                    pid = line.split()[1]
+                    os.kill(int(pid), 15)
+                    return
+    except Exception:
+        pass
+    try:
+        if os.name == "nt":
+            subprocess.run(["taskkill", "/F", "/PID", str(proc.pid)])
+        else:
+            os.kill(proc.pid, 15)
+    except Exception:
+        pass
+    return None
