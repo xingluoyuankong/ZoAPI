@@ -33,7 +33,7 @@ fi
 VPY="./.venv/bin/python"
 
 if ! "$VPY" - <<'PY' >/dev/null 2>&1
-import fastapi, uvicorn, httpx, pydantic, questionary, browser_cookie3
+import fastapi, uvicorn, httpx, pydantic, questionary, rich, playwright
 PY
 then
   echo "[+] Ставлю/обновляю зависимости проекта ..."

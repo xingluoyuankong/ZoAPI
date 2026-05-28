@@ -56,7 +56,7 @@ if not exist ".venv\Scripts\python.exe" (
 
 set "VPY=.venv\Scripts\python.exe"
 
-"%VPY%" -c "import fastapi, uvicorn, httpx, pydantic, questionary, browser_cookie3" >nul 2>nul
+"%VPY%" -c "import fastapi, uvicorn, httpx, pydantic, questionary, rich, playwright" >nul 2>nul
 if errorlevel 1 (
   echo [+] Ставлю/обновляю зависимости проекта ...
   "%VPY%" -m pip install --quiet -r requirements.txt
