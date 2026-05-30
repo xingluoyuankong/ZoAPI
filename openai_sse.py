@@ -218,9 +218,10 @@ class ChatCompletionsTranslator:
             if kind == "text":
                 text = part.get("content") or ""
             elif kind == "thinking":
-                # thinking рендерим как пустоту (OpenAI клиенты не ждут reasoning_content
-                # в @ai-sdk/openai-compatible)
-                return
+                # Parse thinking for <zo:call> tags — model may emit tools there
+                text = part.get("content") or ""
+                if not text:
+                    return
             elif kind in ("tool_call", "tool_use"):
                 tool_name = part.get("tool_name") or part.get("name") or "tool"
                 tool_id = part.get("tool_call_id") or part.get("id") or ("call_" + uuid.uuid4().hex[:24])
@@ -232,7 +233,10 @@ class ChatCompletionsTranslator:
             if dkind == "text":
                 text = delta.get("content_delta") or ""
             elif dkind == "thinking":
-                return
+                # Parse thinking for <zo:call> tags
+                text = delta.get("content_delta") or ""
+                if not text:
+                    return
             elif dkind in ("tool_call", "tool_use", "args"):
                 partial = delta.get("args_delta") or delta.get("content_delta") or ""
                 if not isinstance(partial, str):
@@ -662,6 +666,9 @@ class ResponsesApiTranslator:
             kind = part.get("part_kind")
             if kind == "text":
                 text = part.get("content") or ""
+            elif kind == "thinking":
+                # Parse thinking for <zo:call> tags
+                text = part.get("content") or ""
             elif kind in ("tool_call", "tool_use"):
                 tool_name = part.get("tool_name") or part.get("name") or "tool"
                 tool_id = part.get("tool_call_id") or part.get("id") or ("call_" + uuid.uuid4().hex[:24])
@@ -670,6 +677,9 @@ class ResponsesApiTranslator:
             delta = data.get("delta") or {}
             dkind = delta.get("part_delta_kind")
             if dkind == "text":
+                text = delta.get("content_delta") or ""
+            elif dkind == "thinking":
+                # Parse thinking for <zo:call> tags
                 text = delta.get("content_delta") or ""
             elif dkind in ("tool_call", "tool_use", "args"):
                 partial = delta.get("args_delta") or delta.get("content_delta") or ""

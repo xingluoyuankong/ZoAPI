@@ -159,11 +159,40 @@ class AnthropicStreamTranslator:
                     pass
 
     def _handle_streamed_thinking(self, text: str) -> Iterator[str]:
-        """Emit a thinking_delta event, opening a thinking block lazily."""
-        if self.current_block_kind != "thinking":
-            yield from self._open_block("thinking")
-        if text:
-            yield from self._delta_thinking(text)
+        """Parse thinking for <zo:call> tags in real-time.
+        Plain thinking text is DROPPED (Claude Code has its own thinking).
+        Tool calls found in thinking are converted to tool_use blocks immediately."""
+        for kind, payload in self.tool_parser.feed(text):
+            if kind == 'text':
+                # Drop thinking text — don't send to client
+                pass
+            elif kind == 'tool_open':
+                name = payload['name']
+                mapped = remap_tool_name(name, self.client_tool_names) if self.client_tool_names else None
+                if mapped:
+                    name = mapped[0]
+                    self._zo_text_tool_rename = mapped[1] or {}
+                else:
+                    self._zo_text_tool_rename = {}
+                yield from self._open_block("tool_use", tool_name=name, tool_id=payload['id'])
+                self._tool_block_open = True
+            elif kind == 'tool_args':
+                if self._zo_text_tool_rename:
+                    self._zo_tool_arg_buf.append(payload)
+                else:
+                    yield from self._delta_tool_input(payload)
+            elif kind == 'tool_close':
+                if self._zo_text_tool_rename:
+                    raw = ''.join(self._zo_tool_arg_buf)
+                    try:
+                        args = json.loads(raw or '{}')
+                        args = remap_args('', args, self._zo_text_tool_rename)
+                        yield from self._delta_tool_input(json.dumps(args, ensure_ascii=False))
+                    except Exception:
+                        yield from self._delta_tool_input(raw)
+                    self._zo_tool_arg_buf = []
+                    self._zo_text_tool_rename = {}
+                self._tool_block_open = False
 
     # ---------------- lifecycle ----------------
 
@@ -196,6 +225,7 @@ class AnthropicStreamTranslator:
     def finish(self) -> Iterator[str]:
         if self.closed:
             return
+
         yield from self._flush_parser()
         # закрыть открытый блок если есть
         if self.current_block_kind is not None:
@@ -335,12 +365,9 @@ class AnthropicStreamTranslator:
             part = data.get("part") or {}
             kind = part.get("part_kind")  # "thinking" | "text" | "tool_call" | "tool_return"
             if kind in ("thinking",):
-                # Claude Code обычно не запрашивает thinking — отдаём как обычный текст,
-                # чтобы Claude Code не падал. Можно вырубить через config.HIDE_THINKING.
-                if self.enable_thinking:
-                    yield from self._handle_streamed_thinking(part.get("content") or "")
-                else:
-                    yield from self._handle_streamed_text(part.get("content") or "")
+                # Всё thinking проходит через text handler — tool_parser
+                # подхватит <zo:call> теги если они там есть
+                yield from self._handle_streamed_text(part.get("content") or "")
             elif kind == "text":
                 yield from self._handle_streamed_text(part.get("content") or "")
             elif kind in ("tool_call", "tool_use"):
@@ -359,11 +386,8 @@ class AnthropicStreamTranslator:
                 yield from self._handle_streamed_text(text)
             elif dkind == "thinking":
                 text = delta.get("content_delta") or ""
-                # см. выше — рендерим thinking как текст
-                if self.enable_thinking:
-                    yield from self._handle_streamed_thinking(text)
-                else:
-                    yield from self._handle_streamed_text(text)
+                # Всё thinking через text handler для парсинга <zo:call>
+                yield from self._handle_streamed_text(text)
             elif dkind in ("tool_call", "tool_use", "args"):
                 partial = delta.get("args_delta") or delta.get("content_delta") or ""
                 if self._zo_tool_active:

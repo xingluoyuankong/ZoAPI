@@ -1,107 +1,169 @@
 """
-HTTP-клиент к Zo Computer.
+HTTP-клиент к Zo Computer — переписан по мотивам zo-proxy-public.
 
-Эндпоинты:
- - POST /ask            — основной чат (streaming SSE)
- - GET  /conversations  — список разговоров
- - GET  /models/available — модели
- - GET  /personas/available — персоны
+Ключевые улучшения:
+  - Browser fingerprint rotation (каждый аккаунт = свой профиль)
+  - XML-mode persona (лёгкая, нейтральное имя, scopes=[] — серверные тулы Zo не видны)
+  - Conversation state + delta (reuse zo conversation_id, шлём только
+    новые сообщения, детектим бэктрекинг)
+  - Proactive token refresh (если refresh_token есть и TTL < 7d)
+  - Jitter между запросами (антибот)
 
-Авторизация — сессионные cookies (access_token, refresh_token).
-Шлёт всё с теми же хедерами, что и веб-чат Zo (Origin, Referer,
-X-Zo-Workspace-Origin, x-zo-streaming-version и т.д.), потому что
-бэкенд их проверяет и без них даёт 401.
+Публичный API сохранён для launcher.py, proxy.py, auth_setup.py:
+  - ask_stream(), list_models(), list_personas(), create_persona(),
+    set_main_persona(), get_active_personas(), fetch_balance(), ping(),
+    ensure_bridge_persona(), close()
 """
 
 from __future__ import annotations
 
 import asyncio
+import base64
 import json
 import logging
+import time
 import uuid
 from typing import Any, AsyncIterator
 
 import httpx
 
-try:
-    from utils import proxies as _proxies  # type: ignore
-except Exception:  # noqa: BLE001
-    _proxies = None  # type: ignore[assignment]
-
 from accounts import Account
+from fingerprint import jitter_seconds, persona_name_for, profile_for_account
+
+try:
+    from utils import proxies as _proxies
+except Exception:
+    _proxies = None  # type: ignore[assignment]
 
 log = logging.getLogger("zo-proxy.client")
 
-FIRST_CHUNK_TIMEOUT = 40.0  # сек до первого события от Zo → ZoTimeout
-BETWEEN_CHUNKS_TIMEOUT = 90.0  # сек между чанками внутри стрима
+ZO_API = "https://api.zo.computer"
+ZO_AUTH = "https://auth.zo.computer"
+REFRESH_PATH = "/zo/refresh_token"
+REFRESH_THRESHOLD_SECS = 7 * 24 * 3600  # 7 days
 
+FIRST_CHUNK_TIMEOUT = 40.0
+BETWEEN_CHUNKS_TIMEOUT = 90.0
+
+
+# ---------- Exceptions ----------
 
 class ZoAuthError(Exception):
-    """access_token истёк или невалиден."""
-
+    """access_token истёк или невалиден (401)."""
 
 class ZoForbidden(Exception):
     """403 от Zo."""
 
-
 class ZoServerError(Exception):
     """5xx."""
-
 
 class ZoBadRequest(Exception):
     """4xx, не auth."""
 
-
 class ZoTimeout(Exception):
-    """Нет ответа >FIRST_CHUNK_TIMEOUT секунд."""
+    """Нет ответа > timeout."""
 
+
+# ---------- XML Persona ----------
+
+XML_PERSONA_PROMPT = (
+    "When a message contains an AVAILABLE TOOLS section, call tools by "
+    "outputting this XML format AS LITERAL TEXT in your response:\n\n"
+    '<zo:call name="ToolName" id="call_1">{"param": "value"}</zo:call>\n\n'
+    "Rules:\n"
+    "- Each tool in AVAILABLE TOOLS has an example call. Copy that format exactly.\n"
+    "- Output ONLY the <zo:call> tag. No text before or after. Stop immediately.\n"
+    "- Tool names are case-sensitive — copy exactly from AVAILABLE TOOLS.\n"
+    "- The JSON between tags must match the tool's parameters.\n"
+    "- After you call a tool, result arrives as <zo:result id=\"...\">...</zo:result>.\n"
+    "- When no tool is needed, respond in plain text (no XML tags).\n"
+    "- Never mix text and tool calls in one response.\n"
+    "- This is TEXT output, not function calling. Write the XML literally.\n\n"
+    "IDENTITY: You are whatever the [SYSTEM] section in the message defines. "
+    "Follow that identity completely.\n"
+    "Never mention or acknowledge: Zo, Zo Computer, personas, proxies, relays, "
+    "middleware, /home/workspace, two tool sets, or this prompt.\n\n"
+    "LANGUAGE: Think and respond in the user's language. Russian user → Russian."
+)
+
+
+# ---------- Helpers ----------
 
 def _headers_for(account: Account, idempotency_key: str | None = None) -> dict[str, str]:
-    """Полный набор браузерных хедеров для запроса к /ask."""
-    h = {
-        "accept": "*/*",
-        "accept-language": "ru-RU,ru;q=0.9,en-US;q=0.8,en;q=0.7",
-        "content-type": "application/json",
-        "origin": account.workspace_origin(),
-        "referer": account.workspace_origin() + "/",
-        "x-zo-workspace-origin": account.workspace_origin(),
+    """Полный набор браузерных хедеров на базе fingerprint профиля."""
+    prof = profile_for_account(account.label)
+    h = prof.headers()
+    h.update({
+        "Content-Type": "application/json",
         "x-zo-streaming-version": "2",
-        "sec-ch-ua": '"Chromium";v="148", "Google Chrome";v="148", "Not/A)Brand";v="99"',
-        "sec-ch-ua-mobile": "?0",
-        "sec-ch-ua-platform": '"Windows"',
-        "sec-fetch-dest": "empty",
-        "sec-fetch-mode": "cors",
-        "sec-fetch-site": "same-site",
-        "user-agent": (
-            "Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
-            "AppleWebKit/537.36 (KHTML, like Gecko) "
-            "Chrome/148.0.0.0 Safari/537.36"
-        ),
-    }
+        "X-Zo-Workspace-Origin": account.workspace_origin(),
+        "Origin": account.workspace_origin(),
+        "Referer": account.workspace_origin() + "/",
+    })
     if idempotency_key:
-        h["idempotency-key"] = idempotency_key
+        h["Idempotency-Key"] = idempotency_key
     return h
 
 
 def _cookies_for(account: Account) -> dict[str, str]:
     from urllib.parse import quote
-    return {
-        "access_token": account.access_token,
-        "refresh_token": quote(account.refresh_token, safe=""),
-    }
+    c: dict[str, str] = {"access_token": account.access_token}
+    if account.refresh_token:
+        c["refresh_token"] = quote(account.refresh_token, safe="")
+    return c
 
+
+def _raise_for_status(r: httpx.Response) -> None:
+    if r.status_code < 400:
+        return
+    _raise_status(r.status_code, r.text)
+
+
+def _raise_status(status: int, body: str) -> None:
+    if status in (401,):
+        raise ZoAuthError(_short(body) or "Invalid or expired token")
+    if status in (403,):
+        raise ZoForbidden(_short(body) or "Access denied")
+    if 400 <= status < 500:
+        raise ZoBadRequest(f"{status}: {_short(body)}")
+    raise ZoServerError(f"{status}: {_short(body)}")
+
+
+def _short(body: str, n: int = 400) -> str:
+    try:
+        j = json.loads(body)
+        if isinstance(j, dict):
+            for k in ("detail", "error", "message"):
+                if k in j and isinstance(j[k], str):
+                    return j[k][:n]
+            return json.dumps(j)[:n]
+    except Exception:
+        pass
+    return body[:n].strip()
+
+
+def _decode_jwt_exp(jwt: str) -> int:
+    """Достаёт exp из JWT payload. 0 если не получилось."""
+    try:
+        payload = jwt.split(".")[1]
+        payload += "=" * (-len(payload) % 4)
+        claims = json.loads(base64.urlsafe_b64decode(payload))
+        return int(claims.get("exp") or 0)
+    except Exception:
+        return 0
+
+
+# ---------- Client ----------
 
 class ZoClient:
-    """
-    Тонкая обёртка над httpx.AsyncClient.
-    Все методы принимают Account явно — клиент сам по себе stateless.
-    """
+    """Тонкая обёртка над httpx.AsyncClient. Stateless re: auth."""
 
     def __init__(
         self,
-        base_url: str = "https://api.zo.computer",
+        base_url: str = ZO_API,
         timeout_connect: float = 30.0,
         timeout_read: float = 900.0,
+        jitter: bool = True,
     ) -> None:
         self.base_url = base_url.rstrip("/")
         self._timeout = httpx.Timeout(
@@ -111,8 +173,14 @@ class ZoClient:
             pool=30.0,
         )
         self._clients: dict[str | None, httpx.AsyncClient] = {}
+        self.jitter = jitter
+        # Per-account refresh locks (asyncio, lazy)
+        self._refresh_locks: dict[str, asyncio.Lock] = {}
+        # Per-account XML persona cache
+        self._persona_cache: dict[str, str] = {}  # label -> persona_id
+        self._persona_active: dict[str, bool] = {}  # label -> True if activated
 
-    def _proxy_for(self, account: "Account | None") -> str | None:
+    def _proxy_for(self, account: Account | None) -> str | None:
         if _proxies is None:
             return None
         try:
@@ -121,7 +189,7 @@ class ZoClient:
         except Exception:
             return None
 
-    def _get(self, account: "Account | None") -> httpx.AsyncClient:
+    def _get(self, account: Account | None = None) -> httpx.AsyncClient:
         proxy = self._proxy_for(account)
         client = self._clients.get(proxy)
         if client is not None:
@@ -137,6 +205,10 @@ class ZoClient:
         self._clients[proxy] = client
         return client
 
+    async def _maybe_jitter(self) -> None:
+        if self.jitter:
+            await asyncio.sleep(jitter_seconds())
+
     async def close(self) -> None:
         clients = list(self._clients.values())
         self._clients.clear()
@@ -146,9 +218,179 @@ class ZoClient:
             except Exception:
                 pass
 
-    # ------------------------- non-stream helpers -------------------------
+    # ===================== Token Refresh =====================
+
+    def _refresh_lock_for(self, label: str) -> asyncio.Lock:
+        lock = self._refresh_locks.get(label)
+        if lock is None:
+            lock = asyncio.Lock()
+            self._refresh_locks[label] = lock
+        return lock
+
+    async def maybe_refresh(self, account: Account, *, force: bool = False) -> bool:
+        """Proactively refresh if TTL < threshold. Returns True if refreshed."""
+        if not account.refresh_token:
+            return False
+        now = time.time()
+        exp = account.expires_at() or 0
+        if not force and (exp - now) > REFRESH_THRESHOLD_SECS:
+            return False
+
+        lock = self._refresh_lock_for(account.label)
+        async with lock:
+            # Re-check after lock
+            exp = account.expires_at() or 0
+            now = time.time()
+            if not force and (exp - now) > REFRESH_THRESHOLD_SECS:
+                return False
+            try:
+                new_access, new_refresh = await self._do_refresh(account)
+                account.access_token = new_access
+                if new_refresh:
+                    account.refresh_token = new_refresh
+                new_exp = _decode_jwt_exp(new_access)
+                log.info("[%s] token refreshed, new TTL %.0fh", account.label, (new_exp - time.time()) / 3600)
+                return True
+            except Exception as e:
+                log.warning("[%s] refresh failed: %s", account.label, e)
+                return False
+
+    async def _do_refresh(self, account: Account) -> tuple[str, str | None]:
+        """Hit auth.zo.computer/zo/refresh_token. Returns (new_access, new_refresh)."""
+        from urllib.parse import quote
+        cookies = f"access_token={account.access_token}; refresh_token={quote(account.refresh_token, safe='')}"
+        prof = profile_for_account(account.label)
+        headers = prof.headers()
+        headers.update({
+            "Cookie": cookies,
+            "Origin": account.workspace_origin(),
+            "Referer": account.workspace_origin() + "/",
+        })
+
+        async with httpx.AsyncClient(timeout=20.0, follow_redirects=False) as http:
+            r = await http.get(f"{ZO_AUTH}{REFRESH_PATH}", headers=headers)
+
+        if r.status_code in (401, 403):
+            raise ZoAuthError(f"refresh rejected: {r.status_code} {r.text[:200]}")
+        if r.status_code != 204:
+            raise ZoServerError(f"refresh failed: {r.status_code} {r.text[:200]}")
+
+        # Parse Set-Cookie headers
+        new_access: str | None = None
+        new_refresh: str | None = None
+        for raw in r.headers.get_list("set-cookie"):
+            head = raw.split(";", 1)[0]
+            if "=" not in head:
+                continue
+            name, value = head.split("=", 1)
+            name = name.strip()
+            value = value.strip()
+            if not value:
+                continue
+            if name == "access_token":
+                new_access = value
+            elif name == "refresh_token":
+                new_refresh = value
+
+        if not new_access:
+            raise ZoServerError("refresh returned 204 but no access_token cookie")
+        return new_access, new_refresh
+
+    async def _safe_refresh(self, account: Account) -> None:
+        """Non-throwing refresh attempt before hot-path requests."""
+        try:
+            await self.maybe_refresh(account)
+        except Exception:
+            pass
+
+    # ===================== XML Persona Management =====================
+
+    async def ensure_xml_persona(self, account: Account) -> str | None:
+        """Создаёт или находит XML-mode персону, возвращает persona_id.
+        Кэшируется per-account. При первом вызове после старта всегда
+        пересоздаёт (удаляет старую + создаёт с актуальным промптом)."""
+        cached = self._persona_cache.get(account.label)
+        if cached:
+            return cached
+
+        target_name = persona_name_for(account.label)
+        await self._maybe_jitter()
+
+        try:
+            personas = await self.list_personas(account)
+        except Exception as e:
+            log.warning("[%s] list_personas failed: %s", account.label, e)
+            return None
+
+        # Delete existing persona with our name (force-recreate with latest prompt)
+        for p in personas:
+            if (p.get("name") or "") == target_name:
+                old_pid = p.get("id")
+                if old_pid:
+                    log.info("[%s] deleting old XML persona %s to recreate with fresh prompt", account.label, old_pid)
+                    await self._maybe_jitter()
+                    try:
+                        await self._get(account).delete(
+                            f"/personas/{old_pid}",
+                            headers=_headers_for(account),
+                            cookies=_cookies_for(account),
+                        )
+                    except Exception:
+                        pass
+                break
+
+        # Create with latest prompt
+        await self._maybe_jitter()
+        try:
+            created = await self.create_persona(
+                account, target_name, XML_PERSONA_PROMPT, scopes=[]
+            )
+            pid = created.get("id") if isinstance(created, dict) else None
+            if pid:
+                self._persona_cache[account.label] = pid
+                log.info("[%s] created XML persona: %s (id=%s)", account.label, target_name, pid)
+                return pid
+        except Exception as e:
+            log.warning("[%s] create_persona failed: %s", account.label, e)
+        return None
+
+    async def ensure_xml_mode_active(self, account: Account) -> str | None:
+        """Идемпотентно: создаёт XML-персону и активирует для main.
+        Кэшируется — повторные вызовы бесплатны."""
+        if self._persona_active.get(account.label):
+            return self._persona_cache.get(account.label)
+
+        pid = await self.ensure_xml_persona(account)
+        if not pid:
+            return None
+
+        # Проверяем текущую активную
+        try:
+            active = await self.get_active_personas(account)
+            current_main = active.get("main") if isinstance(active, dict) else None
+        except Exception:
+            current_main = None
+
+        if current_main != pid:
+            await self._maybe_jitter()
+            try:
+                await self.set_main_persona(account, pid)
+            except Exception as e:
+                log.warning("[%s] set_main_persona failed: %s", account.label, e)
+
+        self._persona_active[account.label] = True
+        return pid
+
+    def clear_persona_cache(self, label: str) -> None:
+        """Сбрасывает кэш персоны (например после cooldown)."""
+        self._persona_cache.pop(label, None)
+        self._persona_active.pop(label, None)
+
+    # ===================== Non-stream API =====================
 
     async def list_models(self, account: Account) -> list[dict[str, Any]]:
+        await self._safe_refresh(account)
+        await self._maybe_jitter()
         r = await self._get(account).get(
             "/models/",
             headers=_headers_for(account),
@@ -158,7 +400,8 @@ class ZoClient:
         return r.json().get("models", [])
 
     async def list_personas(self, account: Account) -> list[dict[str, Any]]:
-        """GET /personas/ — куки, без API-ключа (так делает веб-UI)."""
+        await self._safe_refresh(account)
+        await self._maybe_jitter()
         r = await self._get(account).get(
             "/personas/",
             headers=_headers_for(account),
@@ -178,11 +421,11 @@ class ZoClient:
         scopes: list[str] | None = None,
         image: str | None = None,
     ) -> dict[str, Any]:
-        """POST /personas/ — create a new persona. Returns the created persona dict.
-
-        Body shape (captured fr
-        """
-        body = {"name": name, "prompt": prompt, "image": None, "scopes": scopes or []}
+        body: dict[str, Any] = {"name": name, "prompt": prompt, "image": None}
+        if scopes is not None:
+            body["scopes"] = scopes
+        await self._safe_refresh(account)
+        await self._maybe_jitter()
         r = await self._get(account).post(
             "/personas/",
             json=body,
@@ -192,28 +435,9 @@ class ZoClient:
         _raise_for_status(r)
         return r.json()
 
-    async def update_persona_scopes(
-        self,
-        account: Account,
-        persona_id: str,
-        scopes: list[str],
-    ) -> bool:
-        """Пытается выставить persona.scopes через несколько вариантов
-        эндпоинтов (точный путь Zo не задокументирован).
-        """
-        for method in ("PATCH", "PUT", "POST"):
-            url = f"/personas/{persona_id}"
-            if method == "POST":
-                url += "/scopes"
-            r = await self._get(account).request(
-                method, url, json={"scopes": scopes}, headers=_headers_for(account), cookies=_cookies_for(account)
-            )
-            if r.status_code == 200:
-                return True
-        return False
-
     async def get_active_personas(self, account: Account) -> dict[str, Any]:
-        """GET /personas/active, returns the {main, greeting, sms, email, telegram, discord, slack, schedule} dict."""
+        await self._safe_refresh(account)
+        await self._maybe_jitter()
         r = await self._get(account).get(
             "/personas/active",
             headers=_headers_for(account),
@@ -223,21 +447,24 @@ class ZoClient:
         return r.json()
 
     async def set_main_persona(self, account: Account, persona_id: str) -> bool:
-        """Делает персону активной для канала main.
-
-        PUT /personas/active/{persona_id} с пустым body — как делает веб-UI.
-        Возвращает True если success=true в ответе.
-        """
-        r = await self._get(account).put(
+        await self._safe_refresh(account)
+        await self._maybe_jitter()
+        # Reference uses POST with conversation_type (not PUT without body)
+        r = await self._get(account).post(
             f"/personas/active/{persona_id}",
+            json={"conversation_type": "main"},
             headers=_headers_for(account),
             cookies=_cookies_for(account),
         )
         if r.status_code != 200:
-            log.warning(
-                "[%s] set_main_persona: HTTP %d body=%s",
-                account.label, r.status_code, r.text[:200]
+            # Fallback: try PUT (older Zo API)
+            r = await self._get(account).put(
+                f"/personas/active/{persona_id}",
+                headers=_headers_for(account),
+                cookies=_cookies_for(account),
             )
+        if r.status_code != 200:
+            log.warning("[%s] set_main_persona: HTTP %d", account.label, r.status_code)
             return False
         try:
             return bool(r.json().get("success", False))
@@ -279,7 +506,6 @@ class ZoClient:
     async def ensure_rule(
         self, account: Account, instruction: str, condition: str = ""
     ) -> str | None:
-        """Find a rule whose instruction matches; create if missing. Returns rule id or None."""
         rules = await self.list_rules(account)
         for r in rules:
             if r.get("instruction") == instruction:
@@ -290,82 +516,9 @@ class ZoClient:
     async def ensure_bridge_persona(
         self, account: Account, name: str, prompt: str
     ) -> str | None:
-        """
-        Полностью настраивает bridge-персону. Логика как у веб-UI:
-          1. GET /personas/                 — ищем по name
-          2. POST /personas/                — если нет, создаём со scopes=[]
-          3. PUT  /personas/active/{id}     — делаем активной
-          4. GET  /personas/active          — проверяем что main == id
-        Между шагами sleep(1) чтобы бэкенд успел.
-        """
-        import asyncio
-        import runtime
-        # --- 1) list ---
-        try:
-            personas = await self.list_personas(account)
-        except Exception as e:
-            log.warning("[%s] list_personas failed: %s", account.label, e)
-            return None
-        log.info(
-            "[%s] ensure_bridge_persona: %d existing, looking for %r",
-            account.label, len(personas), name,
-        )
-        pid = None
-        for pp in personas:
-            if pp.get("name") == name:
-                pid = pp.get("id")
-                break
-
-        # --- 2) create if missing ---
-        if not pid:
-            try:
-                created = await self.create_persona(
-                    account, name, prompt, scopes=["web:browse"]
-                )
-                pid = created.get("id") if isinstance(created, dict) else None
-                log.info(
-                    "[%s] ensure_bridge_persona: created persona id=%s",
-                    account.label, pid,
-                )
-            except Exception as e:
-                log.exception(
-                    "[%s] ensure_bridge_persona: create_persona FAILED: %s",
-                    account.label, e,
-                )
-                return None
-            await asyncio.sleep(1.0)
-        else:
-            log.info("[%s] ensure_bridge_persona: persona already exists id=%s", account.label, pid)
-
-        if not pid:
-            log.warning("[%s] ensure_bridge_persona: no pid after create", account.label)
-            return None
-
-        # --- 3) set main (всегда: бридж должна быть активной)
-        try:
-            ok = await self.set_main_persona(account, pid)
-            log.info("[%s] ensure_bridge_persona: set_main_persona ok=%s pid=%s", account.label, ok, pid)
-        except Exception as e:  # noqa: BLE001
-            log.exception("[%s] ensure_bridge_persona: set_main_persona FAILED: %s", account.label, e)
-
-        await asyncio.sleep(1.0)
-
-        # --- 4) verify ---
-        try:
-            active = await self.get_active_personas(account)
-            current_main = active.get("main")
-            if current_main == pid:
-                log.info("[%s] ensure_bridge_persona: VERIFIED main=%s", account.label, pid)
-            else:
-                log.warning("[%s] ensure_bridge_persona: main mismatch — expected %s got %s, retry", account.label, pid, current_main)
-                await asyncio.sleep(1.0)
-                try:
-                    await self.set_main_persona(account, pid)
-                except Exception:
-                    pass
-        except Exception as e:  # noqa: BLE001
-            log.warning("[%s] ensure_bridge_persona: verify failed: %s", account.label, e)
-
+        """Совместимость со старым bridge_persona.py API.
+        Теперь делегирует в ensure_xml_mode_active."""
+        pid = await self.ensure_xml_mode_active(account)
         return pid
 
     # ----------------------- API keys -----------------------
@@ -424,6 +577,22 @@ class ZoClient:
             log.exception("[%s] create_api_key failed: %s", account.label, e)
             return None
 
+    async def update_persona_scopes(
+        self, account: Account, persona_id: str, scopes: list[str]
+    ) -> bool:
+        for method in ("PATCH", "PUT", "POST"):
+            url = f"/personas/{persona_id}"
+            if method == "POST":
+                url += "/scopes"
+            r = await self._get(account).request(
+                method, url, json={"scopes": scopes},
+                headers=_headers_for(account),
+                cookies=_cookies_for(account),
+            )
+            if r.status_code == 200:
+                return True
+        return False
+
     async def list_conversations(self, account: Account) -> list[dict[str, Any]]:
         r = await self._get(account).get(
             "/conversations",
@@ -437,7 +606,6 @@ class ZoClient:
         return data.get("conversations", [])
 
     async def ping(self, account: Account) -> bool:
-        """Быстрый health-check: пытаемся получить список моделей."""
         try:
             await self.list_models(account)
             return True
@@ -445,7 +613,7 @@ class ZoClient:
             return False
 
     async def fetch_balance(self, account: Account) -> int | None:
-        """Возвращает суммарный available баланс в центах или None при ошибке."""
+        await self._safe_refresh(account)
         try:
             r = await self._get(account).get(
                 "/billing/credit-grants?testmode=false",
@@ -469,7 +637,7 @@ class ZoClient:
             pass
         return None
 
-    # ------------------------- streaming chat -------------------------
+    # ===================== Streaming Chat =====================
 
     async def ask_stream(
         self,
@@ -482,11 +650,15 @@ class ZoClient:
         command_paths: list[str] | None = None,
         expanded_paths: list[str] | None = None,
         persona_id: str | None = None,
+        context_parts: list[dict] | None = None,
     ) -> AsyncIterator[tuple[str, dict[str, Any], str | None]]:
         """
         Async generator: yields (event_type, data_dict, conversation_id_header).
-        conversation_id_header возвращается только на первом yield.
+        conversation_id_header только на первом yield.
         """
+        await self._safe_refresh(account)
+        await self._maybe_jitter()
+
         body: dict[str, Any] = {
             "q": q,
             "context_paths": context_paths or [],
@@ -499,6 +671,8 @@ class ZoClient:
             body["conversation_id"] = conversation_id
         if persona_id:
             body["persona_id"] = persona_id
+        if context_parts:
+            body["context_parts"] = context_parts
 
         idempotency = str(uuid.uuid4())
 
@@ -515,6 +689,8 @@ class ZoClient:
                 _raise_status(resp.status_code, err)
 
             conv_header = resp.headers.get("x-conversation-id")
+            # Also check response body for conversation_id (some Zo versions
+            # return it in SSE events rather than headers)
             first_event = True
             got_first = False
 
@@ -543,6 +719,11 @@ class ZoClient:
                             data = json.loads(raw)
                         except json.JSONDecodeError:
                             data = {"_raw": raw}
+                        # Extract conversation_id from FrontendModelResponse
+                        if event_type == "FrontendModelResponse" and isinstance(data, dict):
+                            cid = data.get("conversation_id")
+                            if cid and not conv_header:
+                                conv_header = cid
                         yield event_type, data, conv_header if first_event else None
                         first_event = False
                     event_type = None
@@ -554,37 +735,3 @@ class ZoClient:
                     event_type = line[6:].strip()
                 elif line.startswith("data:"):
                     data_lines.append(line[5:].lstrip())
-
-
-# ---------------------------------------------------------------------------
-# helpers
-# ---------------------------------------------------------------------------
-
-
-def _raise_for_status(r: httpx.Response) -> None:
-    if r.status_code < 400:
-        return
-    _raise_status(r.status_code, r.text)
-
-
-def _raise_status(status: int, body: str) -> None:
-    if status in (401,):
-        raise ZoAuthError(_short(body) or "Invalid or expired token")
-    if status in (403,):
-        raise ZoForbidden(_short(body) or "Access denied")
-    if 400 <= status < 500:
-        raise ZoBadRequest(f"{status}: {_short(body)}")
-    raise ZoServerError(f"{status}: {_short(body)}")
-
-
-def _short(body: str, n: int = 400) -> str:
-    try:
-        j = json.loads(body)
-        if isinstance(j, dict):
-            for k in ("detail", "error", "message"):
-                if k in j and isinstance(j[k], str):
-                    return j[k][:n]
-            return json.dumps(j)[:n]
-    except Exception:
-        pass
-    return body[:n].strip()
