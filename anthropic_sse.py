@@ -116,6 +116,7 @@ class AnthropicStreamTranslator:
                     self._zo_text_tool_rename = mapped[1] or {}
                 else:
                     self._zo_text_tool_rename = {}
+                self._zo_tool_arg_buf = []
                 yield from self._open_block("tool_use", tool_name=name, tool_id=payload['id'])
                 self._tool_block_open = True
             elif kind == 'tool_args':
@@ -125,9 +126,16 @@ class AnthropicStreamTranslator:
                     yield from self._delta_tool_input(payload)
             elif kind == 'tool_close':
                 if self._zo_text_tool_rename:
-                    self._zo_tool_arg_buf.append(payload)
-                else:
-                    pass
+                    raw = ''.join(self._zo_tool_arg_buf)
+                    try:
+                        args = json.loads(raw or '{}')
+                        args = remap_args('', args, self._zo_text_tool_rename)
+                        yield from self._delta_tool_input(json.dumps(args, ensure_ascii=False))
+                    except Exception:
+                        yield from self._delta_tool_input(raw)
+                    self._zo_tool_arg_buf = []
+                    self._zo_text_tool_rename = {}
+                self._tool_block_open = False
 
     def _flush_parser(self) -> Iterator[str]:
         for kind, payload in self.tool_parser.finalize():
@@ -145,6 +153,7 @@ class AnthropicStreamTranslator:
                     self._zo_text_tool_rename = mapped[1] or {}
                 else:
                     self._zo_text_tool_rename = {}
+                self._zo_tool_arg_buf = []
                 yield from self._open_block("tool_use", tool_name=name, tool_id=payload['id'])
                 self._tool_block_open = True
             elif kind == 'tool_args':
@@ -154,9 +163,16 @@ class AnthropicStreamTranslator:
                     yield from self._delta_tool_input(payload)
             elif kind == 'tool_close':
                 if self._zo_text_tool_rename:
-                    self._zo_tool_arg_buf.append(payload)
-                else:
-                    pass
+                    raw = ''.join(self._zo_tool_arg_buf)
+                    try:
+                        args = json.loads(raw or '{}')
+                        args = remap_args('', args, self._zo_text_tool_rename)
+                        yield from self._delta_tool_input(json.dumps(args, ensure_ascii=False))
+                    except Exception:
+                        yield from self._delta_tool_input(raw)
+                    self._zo_tool_arg_buf = []
+                    self._zo_text_tool_rename = {}
+                self._tool_block_open = False
 
     def _handle_streamed_thinking(self, text: str) -> Iterator[str]:
         """Parse thinking for <zo:call> tags in real-time.
