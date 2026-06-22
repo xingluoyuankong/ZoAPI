@@ -55,6 +55,7 @@ class Account:
     domain: str
     access_token: str
     refresh_token: str = ""
+    token_type: str = "cookie_at"   # "cookie_at" (JWT/eyJ...) | "api_key" (zo_sk_...)
     added_at: str = ""
     last_ok_at: str | None = None
     last_err: str | None = None
@@ -99,7 +100,12 @@ class Account:
         return s is not None and s < leeway
 
     def email(self) -> str:
+        if self.token_type == "api_key":
+            return ""
         return self.jwt_payload().get("properties", {}).get("email", "")
+
+    def is_api_key(self) -> bool:
+        return self.token_type == "api_key" or self.access_token.startswith("zo_sk_")
 
     def workspace_origin(self) -> str:
         return f"https://{self.domain}.zo.computer"

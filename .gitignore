@@ -18,4 +18,10 @@ runtime.json
 
 test-accounts.json
 _test_*.py
+_test_*.mjs
 _tmp_*.json
+_check_*.mjs
+_debug_*.mjs
+_probe_*.mjs
+_gen_accounts.py
+proxy.pid

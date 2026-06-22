@@ -107,6 +107,7 @@ def _headers_for(account: Account, idempotency_key: str | None = None) -> dict[s
 
 def _cookies_for(account: Account) -> dict[str, str]:
     from urllib.parse import quote
+    # Both JWT and zo_sk_ tokens are sent as access_token cookie
     c: dict[str, str] = {"access_token": account.access_token}
     if account.refresh_token:
         c["refresh_token"] = quote(account.refresh_token, safe="")
@@ -229,7 +230,7 @@ class ZoClient:
 
     async def maybe_refresh(self, account: Account, *, force: bool = False) -> bool:
         """Proactively refresh if TTL < threshold. Returns True if refreshed."""
-        if not account.refresh_token:
+        if not account.refresh_token or account.is_api_key():
             return False
         now = time.time()
         exp = account.expires_at() or 0
@@ -655,6 +656,88 @@ class ZoClient:
         """
         Async generator: yields (event_type, data_dict, conversation_id_header).
         conversation_id_header только на первом yield.
+
+        Auto-routes based on token type:
+          - zo_sk_ (API key) → POST /zo/ask (official public API, Bearer auth)
+          - JWT (Cookie AT)  → POST /ask (internal browser API, Cookie auth)
+        """
+        if account.is_api_key():
+            async for item in self.ask_zo_stream(
+                account, q=q, model_name=model_name,
+                conversation_id=conversation_id,
+            ):
+                yield item
+        else:
+            async for item in self._ask_internal_stream(
+                account, q=q, model_name=model_name,
+                conversation_id=conversation_id,
+                context_paths=context_paths,
+                command_paths=command_paths,
+                expanded_paths=expanded_paths,
+                persona_id=persona_id,
+                context_parts=context_parts,
+            ):
+                yield item
+
+    async def ask_zo_stream(
+        self,
+        account: Account,
+        *,
+        q: str,
+        model_name: str | None,
+        conversation_id: str | None = None,
+    ) -> AsyncIterator[tuple[str, dict[str, Any], str | None]]:
+        """
+        Official public API: POST /zo/ask with Bearer auth.
+        Used for zo_sk_ API key accounts.
+        Docs: https://docs.zocomputer.com/api.md
+        """
+        await self._maybe_jitter()
+
+        body: dict[str, Any] = {
+            "input": q,
+            "stream": True,
+        }
+        if model_name:
+            body["model_name"] = model_name
+        if conversation_id:
+            body["conversation_id"] = conversation_id
+
+        headers = {
+            "Authorization": f"Bearer {account.access_token}",
+            "Content-Type": "application/json",
+        }
+
+        log.info("[%s] zo_sk_ /zo/ask stream (model=%s)", account.label, model_name)
+
+        async with self._get(account).stream(
+            "POST", "/zo/ask", json=body, headers=headers,
+        ) as resp:
+            if resp.status_code >= 400:
+                body_text = (await resp.aread()).decode("utf-8", errors="replace")
+                log.warning("[%s] Zo /zo/ask %d body: %s", account.label, resp.status_code, body_text[:1500])
+                _raise_status(resp.status_code, body_text)
+
+            conv_header = resp.headers.get("x-conversation-id")
+            async for item in self._iter_sse(resp, conv_header):
+                yield item
+
+    async def _ask_internal_stream(
+        self,
+        account: Account,
+        *,
+        q: str,
+        model_name: str | None,
+        conversation_id: str | None = None,
+        context_paths: list[str] | None = None,
+        command_paths: list[str] | None = None,
+        expanded_paths: list[str] | None = None,
+        persona_id: str | None = None,
+        context_parts: list[dict] | None = None,
+    ) -> AsyncIterator[tuple[str, dict[str, Any], str | None]]:
+        """
+        Internal browser API: POST /ask with Cookie auth.
+        Used for JWT (Cookie AT) accounts.
         """
         await self._safe_refresh(account)
         await self._maybe_jitter()
@@ -676,62 +759,112 @@ class ZoClient:
 
         idempotency = str(uuid.uuid4())
 
-        async with self._get(account).stream(
-            "POST",
+        # Step 1: POST /ask (non-streaming to check status code)
+        ask_resp = await self._get(account).post(
             "/ask",
             json=body,
             headers=_headers_for(account, idempotency),
             cookies=_cookies_for(account),
-        ) as resp:
-            if resp.status_code >= 400:
-                err = (await resp.aread()).decode("utf-8", errors="replace")
-                log.warning("[%s] Zo /ask %d body: %s", account.label, resp.status_code, err[:1500])
-                _raise_status(resp.status_code, err)
+        )
 
-            conv_header = resp.headers.get("x-conversation-id")
-            # Also check response body for conversation_id (some Zo versions
-            # return it in SSE events rather than headers)
-            first_event = True
-            got_first = False
+        if ask_resp.status_code >= 400:
+            err = ask_resp.text
+            log.warning("[%s] Zo /ask %d body: %s", account.label, ask_resp.status_code, err[:1500])
+            _raise_status(ask_resp.status_code, err)
 
-            event_type: str | None = None
-            data_lines: list[str] = []
+        # Step 2: Determine stream source
+        stream_url: str | None = None
+        conv_header = ask_resp.headers.get("x-conversation-id")
 
-            aiter = resp.aiter_lines().__aiter__()
-            while True:
-                timeout = FIRST_CHUNK_TIMEOUT if not got_first else BETWEEN_CHUNKS_TIMEOUT
-                try:
-                    line = await asyncio.wait_for(aiter.__anext__(), timeout=timeout)
-                except StopAsyncIteration:
-                    break
-                except asyncio.TimeoutError:
-                    raise ZoTimeout(
-                        f"Zo не ответил за {timeout:.0f}с — "
-                        f"{'первый чанк' if not got_first else 'продолжение'}"
-                    )
+        if ask_resp.status_code == 202:
+            # v2 API: returns JSON with conversation_id + stream_url
+            try:
+                ask_data = ask_resp.json()
+            except Exception:
+                ask_data = {}
+            stream_url = ask_data.get("stream_url")
+            if not conv_header:
+                conv_header = ask_data.get("conversation_id")
+            if not stream_url:
+                raise ZoServerError("Zo returned 202 but no stream_url")
+            if not stream_url.startswith("http"):
+                stream_url = f"{self.base_url}{stream_url}"
+            log.info("[%s] v2 API: stream_url=%s conv=%s", account.label, stream_url[:80], conv_header)
 
-                got_first = True
+        # Step 3: Stream SSE events
+        if stream_url:
+            # v2: separate GET request for the stream
+            stream_hdrs = {
+                "Cookie": f"access_token={account.access_token}",
+                "Accept": "text/event-stream",
+                "X-Zo-Workspace-Origin": account.workspace_origin(),
+                "Origin": account.workspace_origin(),
+                "Referer": account.workspace_origin() + "/",
+            }
+            prof = profile_for_account(account.label)
+            stream_hdrs.update(prof.headers())
 
-                if not line:
-                    if event_type and data_lines:
-                        raw = "\n".join(data_lines)
-                        try:
-                            data = json.loads(raw)
-                        except json.JSONDecodeError:
-                            data = {"_raw": raw}
-                        # Extract conversation_id from FrontendModelResponse
-                        if event_type == "FrontendModelResponse" and isinstance(data, dict):
-                            cid = data.get("conversation_id")
-                            if cid and not conv_header:
-                                conv_header = cid
-                        yield event_type, data, conv_header if first_event else None
-                        first_event = False
-                    event_type = None
-                    data_lines = []
-                    continue
-                if line.startswith(":"):
-                    continue
-                if line.startswith("event:"):
-                    event_type = line[6:].strip()
-                elif line.startswith("data:"):
-                    data_lines.append(line[5:].lstrip())
+            async with self._get(account).stream(
+                "GET", stream_url, headers=stream_hdrs,
+            ) as sse_resp:
+                if sse_resp.status_code >= 400:
+                    err2 = (await sse_resp.aread()).decode("utf-8", errors="replace")
+                    raise ZoServerError(f"Stream HTTP {sse_resp.status_code}: {err2[:300]}")
+                async for item in self._iter_sse(sse_resp, conv_header):
+                    yield item
+        else:
+            # legacy 200: try to parse body as JSON (FrontendModelResponse)
+            try:
+                data = ask_resp.json()
+                if isinstance(data, dict):
+                    yield "FrontendModelResponse", data, conv_header
+            except Exception:
+                pass
+
+    async def _iter_sse(
+        self, resp, conv_header: str | None,
+    ) -> AsyncIterator[tuple[str, dict[str, Any], str | None]]:
+        """Parse SSE events from a streaming response."""
+        first_event = True
+        got_first = False
+        event_type: str | None = None
+        data_lines: list[str] = []
+
+        aiter = resp.aiter_lines().__aiter__()
+        while True:
+            timeout = FIRST_CHUNK_TIMEOUT if not got_first else BETWEEN_CHUNKS_TIMEOUT
+            try:
+                line = await asyncio.wait_for(aiter.__anext__(), timeout=timeout)
+            except StopAsyncIteration:
+                break
+            except asyncio.TimeoutError:
+                raise ZoTimeout(
+                    f"Zo не ответил за {timeout:.0f}с — "
+                    f"{'первый чанк' if not got_first else 'продолжение'}"
+                )
+
+            got_first = True
+
+            if not line:
+                if event_type and data_lines:
+                    raw = "\n".join(data_lines)
+                    try:
+                        data = json.loads(raw)
+                    except json.JSONDecodeError:
+                        data = {"_raw": raw}
+                    # Extract conversation_id from FrontendModelResponse
+                    if event_type == "FrontendModelResponse" and isinstance(data, dict):
+                        cid = data.get("conversation_id")
+                        if cid and not conv_header:
+                            conv_header = cid
+                    yield event_type, data, conv_header if first_event else None
+                    first_event = False
+                event_type = None
+                data_lines = []
+                continue
+            if line.startswith(":"):
+                continue
+            if line.startswith("event:"):
+                event_type = line[6:].strip()
+            elif line.startswith("data:"):
+                data_lines.append(line[5:].lstrip())

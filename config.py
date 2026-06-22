@@ -10,6 +10,12 @@
 # Где Zo держит чат-API (внутренний /ask). Менять не надо.
 ZO_BASE_URL = "https://api.zo.computer"
 
+# Official public API path (zo_sk_ Bearer auth). Docs: docs.zocomputer.com/api.md
+ZO_PUBLIC_API_PATH = "/zo/ask"
+
+# Internal browser API path (JWT Cookie auth).
+ZO_INTERNAL_API_PATH = "/ask"
+
 # OAuth-провайдер Zo (для будущего refresh-флоу). Менять не надо.
 ZO_AUTH_URL = "https://auth.zo.computer"
 
@@ -21,7 +27,7 @@ PROXY_PORT = 17878
 
 # Модель Zo по умолчанию (когда клиент не указал явно).
 # Полный список: GET https://api.zo.computer/models/available
-ZO_DEFAULT_MODEL = "zo:anthropic/claude-opus-4-7"
+ZO_DEFAULT_MODEL = "zo:openai/gpt-5.4-mini"
 
 # Короткие алиасы. Ключ — ТОЧНОЕ имя (case-insensitive), не подстрока.
 # Полные имена моделей (например claude-opus-4-8-20251210, gpt-5-codex)

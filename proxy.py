@@ -719,6 +719,9 @@ async def admin_bootstrap() -> dict[str, Any]:
         if not a.is_usable():
             results.append({"label": a.label, "ok": False, "reason": "not usable"})
             continue
+        if a.is_api_key():
+            results.append({"label": a.label, "ok": True, "reason": "zo_sk_ (no persona needed)"})
+            continue
         try:
             pid = await ZO.ensure_xml_mode_active(a)
             try:
@@ -1108,8 +1111,8 @@ async def _do_responses_websocket(
         convo_key = _convo_key(acc.label, instructions, first_user)
         convo_id = _get_zo_convo_id(convo_key, acc.label)  # reuse zo conversation if available
         try:
-            # Ensure XML mode persona is active (idempotent + cached)
-            if client_tool_names:
+            # Ensure XML mode persona is active (idempotent + cached, skip for zo_sk_)
+            if client_tool_names and not acc.is_api_key():
                 try:
                     await ZO.ensure_xml_mode_active(acc)
                 except Exception as _e:  # noqa: BLE001
@@ -1189,8 +1192,8 @@ async def _do_openai_chat_stream(
         convo_key = _convo_key(acc.label, system, first_user)
         convo_id = _get_zo_convo_id(convo_key, acc.label)  # reuse zo conversation if available
         try:
-            # Ensure XML mode persona is active (idempotent + cached)
-            if client_tool_names:
+            # Ensure XML mode persona is active (idempotent + cached, skip for zo_sk_)
+            if client_tool_names and not acc.is_api_key():
                 try:
                     await ZO.ensure_xml_mode_active(acc)
                 except Exception as _e:  # noqa: BLE001
@@ -1253,7 +1256,7 @@ async def _do_openai_chat_nonstream(
 ) -> dict[str, Any]:
     from openai_sse import build_openai_nonstream
 
-    text = await _collect_text_response(flat_input, zo_model, system, first_user)
+    text = await _collect_text_response(flat_input, zo_model, system, first_user, client_tool_names)
     return build_openai_nonstream(openai_model_name, text)
 
 
@@ -1284,8 +1287,8 @@ async def _do_responses_stream(
         convo_key = _convo_key(acc.label, system, first_user)
         convo_id = _get_zo_convo_id(convo_key, acc.label)  # reuse zo conversation if available
         try:
-            # Ensure XML mode persona is active (idempotent + cached)
-            if client_tool_names:
+            # Ensure XML mode persona is active (idempotent + cached, skip for zo_sk_)
+            if client_tool_names and not acc.is_api_key():
                 try:
                     await ZO.ensure_xml_mode_active(acc)
                 except Exception as _e:  # noqa: BLE001
@@ -1343,6 +1346,7 @@ async def _collect_text_response(
     zo_model: str,
     system: str | None,
     first_user: str,
+    client_tool_names: list[str] | None = None,
 ) -> str:
     attempts: list[str] = []
     while True:
@@ -1357,8 +1361,8 @@ async def _collect_text_response(
         try:
             text_acc: list[str] = []
             new_conv: str | None = None
-            # Ensure XML mode persona is active (idempotent + cached)
-            if client_tool_names:
+            # Ensure XML mode persona is active (idempotent + cached, skip for zo_sk_)
+            if client_tool_names and not acc.is_api_key():
                 try:
                     await ZO.ensure_xml_mode_active(acc)
                 except Exception as _e:  # noqa: BLE001
@@ -1414,7 +1418,7 @@ async def _do_responses_nonstream(
 ) -> dict[str, Any]:
     from openai_sse import build_responses_nonstream
 
-    text = await _collect_text_response(flat_input, zo_model, system, first_user)
+    text = await _collect_text_response(flat_input, zo_model, system, first_user, client_tool_names)
     return build_responses_nonstream(openai_model_name, text)
 
 
@@ -1454,8 +1458,8 @@ async def _do_stream(
         convo_id = _get_zo_convo_id(convo_key, acc.label)  # reuse zo conversation if available
 
         try:
-            # Ensure XML mode persona is active (idempotent + cached)
-            if client_tool_names:
+            # Ensure XML mode persona is active (idempotent + cached, skip for zo_sk_)
+            if client_tool_names and not acc.is_api_key():
                 try:
                     await ZO.ensure_xml_mode_active(acc)
                 except Exception as _e:  # noqa: BLE001
@@ -1547,8 +1551,8 @@ async def _do_nonstream(
         try:
             text_acc: list[str] = []
             new_conv: str | None = None
-            # Ensure XML mode persona is active (idempotent + cached)
-            if client_tool_names:
+            # Ensure XML mode persona is active (idempotent + cached, skip for zo_sk_)
+            if client_tool_names and not acc.is_api_key():
                 try:
                     await ZO.ensure_xml_mode_active(acc)
                 except Exception as _e:  # noqa: BLE001
